@@ -20,7 +20,7 @@ module AtlasPca
   MAX_LIFETIME_MS = 3_600_000
   MAX_SKEW_MS = 60_000
   MAX_SAFE = (2**53) - 1
-  CHECK_ORDER = %w[wire version audience validity chain plan_inclusion leaf_signature counter].freeze
+  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
 
   class Malformed < StandardError; end
 
@@ -893,8 +893,7 @@ module AtlasPca
     return false unless th.is_a?(Hash)
 
     sh = th['shares']
-    return true if sh.nil?
-
+    # `threshold` must be {shares:[...]} (reference: wire.ts); a missing/null `shares` is a wire failure, not a pass.
     return false unless sh.is_a?(Array) && sh.all? do |s|
       s.is_a?(Hash) && s['role'].is_a?(String) && b32?(s['publicKey']) && b64?(s['sig'])
     end
@@ -995,6 +994,15 @@ module AtlasPca
         gi = grant['issuer']
         verify_chain(chain, gi, gi.is_a?(String)).last
       end
+    end
+
+    # grant_ref_bound (normative): the signed grant_ref MUST be a non-empty string byte-equal to the id of the ROOT
+    # capability of the presented chain (cap_chain[0].id). Independent of the chain verdict; fail-closed on an
+    # empty / malformed chain. Replay state is keyed on grant_ref, so it must not be attacker-chosen.
+    run.call('grant_ref_bound', 'grant_ref is not the id of the root capability in cap_chain') do
+      gref = pcactn['grant_ref']
+      root_id = chain.is_a?(Array) && chain[0].is_a?(Hash) ? chain[0]['id'] : nil
+      gref.is_a?(String) && !gref.empty? && root_id.is_a?(String) && gref == root_id
     end
 
     plan = pcactn['plan']

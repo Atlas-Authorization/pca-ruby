@@ -47,6 +47,10 @@ def unsupported_suite(v)
   when 'pq-nonleaf'
     hops = p['cap_chain'].is_a?(Array) ? p['cap_chain'] : []
     hops.map { |h| alg.call(h) }.find { |a| !SUPPORTED_SIG_SUITES.include?(a) }
+  when String
+    # 0.4.1: a vector that names one concrete suite (`requires: "ml-dsa-87"`, `"slh-dsa-sha2-128f"`) this verifier lacks.
+    r = v['requires']
+    r.empty? || SUPPORTED_SIG_SUITES.include?(r) ? nil : r
   end
 end
 
@@ -93,7 +97,7 @@ vs.each do |v|
 
   ctx = v['context']
   input = v.key?('pcactn_json') ? v['pcactn_json'] : v['pcactn']
-  got = AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'])
+  got = AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'])
   exp = v['expect']
   check(got.allow == exp['allow'], "#{v['name']}: allow=#{got.allow} want #{exp['allow']} (#{got.reason})")
   check(got.checks.keys.sort == exp['checks'].keys.sort, "#{v['name']}: check set #{got.checks.keys} want #{exp['checks'].keys}")
@@ -185,8 +189,161 @@ prim['merkle'].each do |m|
 end
 check(AtlasPca.params_digest(nil) == prim['params_digest_empty'], 'empty params digest mismatch')
 
+# ------------------------------------------------- standalone chain API: root PQ authority (R4-01)
+# primitives.chain_pin[]: verify_chain(chain, expected_root_issuer, ..., pq_pins, trusted_root). A non-ed25519 ROOT needs a
+# verifier-side pin or the stored grant. ML-DSA-65 is in OpenSSL >= 3.5 (required by this runner), so every vector runs.
+chain_pins = prim['chain_pin'] || []
+abort 'no chain_pin primitives' if chain_pins.length < 25
+$cp_ran = 0
+$cp_skipped = 0
+chain_pins.each do |v|
+  reason = v['expect']['reason'].to_s
+  pin_refusal = reason.start_with?('hop 0: root suite')
+  $cp_ran += 1
+  rs, ok = AtlasPca.verify_chain(v['chain'], v['expected_root_issuer'], !v['expected_root_issuer'].nil?, v['allowed_suites'], v['pq_pins'], v['trusted_root'])
+  check(ok == v['expect']['ok'], "#{v['name']}: ok=#{ok} want #{v['expect']['ok']} (#{rs})")
+  check(rs == reason, "#{v['name']}: reason #{rs.inspect} want #{reason.inspect}") if pin_refusal
+end
+check($cp_ran + $cp_skipped == chain_pins.length, 'chain_pin accounting')
+
+# ------------------------------------------------- round 6: whole signer set, signer-set hash, malformed input
+# primitives.threshold_set[] (R6-02, R6-03/R6-04): verify_threshold_share == `valid`; entries whose `requires` suite this
+# verifier does not implement are skipped with a count.
+tset = prim['threshold_set'] || []
+abort 'no threshold_set primitives' if tset.length < 50
+$ts_ran = 0
+$ts_skipped = 0
+tset.each do |e|
+  if e['requires'] && !SUPPORTED_SIG_SUITES.include?(e['requires'])
+    $ts_skipped += 1
+    next
+  end
+  $ts_ran += 1
+  got = begin
+    AtlasPca.verify_threshold_share(e)
+  rescue StandardError => ex
+    "raised #{ex.class}"
+  end
+  check(got == e['valid'], "threshold_set #{e['name']}: got #{got} want #{e['valid']}")
+end
+# primitives.signer_set_hash[]: UTF-8 byte order, pq_pk carried whenever it is a string (incl. "").
+(prim['signer_set_hash'] || []).each do |e|
+  h = AtlasPca.signer_set_hash(e['signer_set'])
+  check(!h.nil? && AtlasPca.b64e(h) == e['hash'], "signer_set_hash #{e['name']}")
+end
+# primitives.malformed[] (R6-05): every entry is a clean deny; nothing may raise out of a public entry point.
+malformed = prim['malformed'] || []
+abort 'no malformed primitives' if malformed.length < 80
+malformed.each do |m|
+  inp = m['input']
+  denied = begin
+    case m['api']
+    when 'chain'
+      _, ok = AtlasPca.verify_chain(inp['chain'], inp['expected_root_issuer'], true)
+      ok == false
+    when 'threshold_share' then AtlasPca.verify_threshold_share(inp) == false
+    when 'pcactn_json'
+      AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud']).allow == false
+    else false
+    end
+  rescue StandardError => ex
+    warn "  #{m['name']} raised #{ex.class}: #{ex.message[0, 80]}"
+    false
+  end
+  check(denied, "malformed #{m['name']} (#{m['api']}): not a clean deny")
+end
+
+# ------------------------------------------------- JSON nesting depth (MAX_JSON_DEPTH = 32) on every untrusted entry point
+# primitives.depth[] (gen-conformance-depth.mjs): limit-1 / limit / limit+1 and a huge depth per api; `valid` is the
+# reference verdict and nothing (not even SystemStackError) may escape. A huge case carries `expand`
+# { marker, levels, leaf }: the value is built here ITERATIVELY so the verifier, not this runner, faces the depth.
+def depth_nest(levels, leaf)
+  v = leaf
+  levels.times { v = [v] }
+  v
+end
+
+def depth_expand(input, ex)
+  return input if ex.nil?
+
+  if input.is_a?(Hash) && input['text'].is_a?(String) && input['text'].include?(ex['marker'])
+    text = input['text'].sub(ex['marker']) { ('[' * ex['levels']) + AtlasPca.canonicalize(ex['leaf']) + (']' * ex['levels']) }
+    return input.merge('text' => text)
+  end
+  deep = depth_nest(ex['levels'], ex['leaf'])
+  stack = [input]
+  until stack.empty?
+    node = stack.pop
+    if node.is_a?(Hash)
+      node.each { |k, x| x == ex['marker'] ? (node[k] = deep) : stack.push(x) }
+    elsif node.is_a?(Array)
+      node.each_index { |i| node[i] == ex['marker'] ? (node[i] = deep) : stack.push(node[i]) }
+    end
+  end
+  input
+end
+
+depth_cases = prim['depth'] || []
+abort 'no depth primitives' if depth_cases.length < 12
+depth_cases.each do |d|
+  inp = depth_expand(d['input'], d['expand'])
+  got = begin
+    case d['api']
+    when 'chain'
+      _, ok = AtlasPca.verify_chain(inp['chain'], inp['expected_root_issuer'], !inp['expected_root_issuer'].nil?)
+      ok
+    when 'threshold_share' then AtlasPca.verify_threshold_share(inp)
+    when 'pcactn_json'
+      AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud']).allow
+    when 'json_parse'
+      begin
+        AtlasPca.parse_json(inp['text'], any_top: true)
+        true
+      rescue AtlasPca::Malformed
+        false
+      end
+    else "unknown api #{d['api']}"
+    end
+  rescue Exception => e # rubocop:disable Lint/RescueException
+    "raised #{e.class}"
+  end
+  check(got == d['valid'], "depth #{d['name']} (#{d['api']}, depth #{d['depth']}): got #{got} want #{d['valid']}")
+end
+
+# ------------------------------------------------------------- 0.4.1 policy helpers + header
+# primitives.caveat_eval: evaluate_caveats(policy_caveats(grant, chain), context) == [expect.allow, expect.failed] (root caveats
+# outside the envelope are evaluated like delegated ones). primitives.pca_header: decode_pca_header (strict unpadded base64url of
+# strict UTF-8) is valid iff `valid`, and then yields `text`.
+caveat_eval = prim['caveat_eval'] || []
+check(caveat_eval.length >= 40, "caveat_eval: #{caveat_eval.length} cases")
+$ce_pass = 0
+caveat_eval.each do |c|
+  want = [c['expect']['allow'], c['expect']['failed']]
+  got = begin
+    AtlasPca.evaluate_caveats(AtlasPca.policy_caveats(c['grant'], c['chain']), c['context'])
+  rescue Exception => e # rubocop:disable Lint/RescueException
+    "raised #{e.class}"
+  end
+  check(got == want, "caveat_eval #{c['name']}: got #{got.inspect} want #{want.inspect}")
+  $ce_pass += 1 if got == want
+end
+pca_header = prim['pca_header'] || []
+check(pca_header.length >= 27, "pca_header: #{pca_header.length} cases")
+$ph_pass = 0
+pca_header.each do |c|
+  ok = begin
+    got = AtlasPca.decode_pca_header(c['input'])
+    !got.nil? == c['valid'] && (got.nil? || got == c['text'])
+  rescue Exception # rubocop:disable Lint/RescueException
+    false
+  end
+  check(ok, "pca_header #{c['name']}")
+  $ph_pass += 1 if ok
+end
+
 # -------------------------------------------------------------------- report
 puts '=== PCA Ruby conformance (wire v2 / v2.1) ==='
+puts "threshold_set: #{$ts_ran} ran, #{$ts_skipped} skipped; signer_set_hash: #{(prim['signer_set_hash'] || []).length}; malformed: #{malformed.length}; depth: #{depth_cases.length}"
 puts "vectors: #{$ran} ran, #{$skipped} skipped of #{vs.length} total"
 unless per_suite_ran.empty?
   puts '  pq/pq-nonleaf suites RAN (incl. terminal-wire negatives under unsupported suites):'
@@ -196,11 +353,13 @@ unless per_suite_skipped.empty?
   puts '  pq/pq-nonleaf suites SKIPPED (unimplemented, genuine-crypto verdict):'
   per_suite_skipped.sort.each { |k, n| puts "    #{k}: #{n}" }
 end
+puts "chain_pin: #{$cp_ran} ran, #{$cp_skipped} skipped of #{chain_pins.length}"
 puts "threshold_share: #{shares.length} vectors (#{$share_accept} valid accepted, #{$share_reject} invalid rejected)"
 puts "  v2.1 bare-agent-share rejected: #{$bare_rejected}; cross-signer-set replay rejected: #{$wrong_set_rejected}"
 if arts.is_a?(Array)
   puts "pq_artifact: #{$art_ran} ran, #{$art_skipped} skipped of #{arts.length} total"
   art_skipped_suites.sort.each { |k, n| puts "    skipped #{k}: #{n}" } unless art_skipped_suites.empty?
 end
+puts "caveat_eval: #{$ce_pass}/#{caveat_eval.length} pass; pca_header: #{$ph_pass}/#{pca_header.length} pass"
 puts "assertions: #{$count}, failures: #{$fails}"
 exit($fails.zero? ? 0 : 1)

@@ -2,6 +2,10 @@
 
 # Rack middleware for Proof-Carrying Authority, built ON TOP of the AtlasPca verifier.
 #
+# Caveats are NOT evaluated here (nor by the core verifier): a resource server that enforces the grant's caveats calls
+# AtlasPca.evaluate_caveats(AtlasPca.policy_caveats(grant, pcactn['cap_chain']), ctx) with its own action params (the root
+# grant's caveats outside the envelope included: the 0.4.1 policy-layer security fix).
+#
 # It does NO crypto of its own: it decodes a PCActn off the request, resolves the grant it
 # names, and defers every decision to AtlasPca.verify_pcactn (all 8 offline checks, audience
 # vs the signed `aud`, chain rooted at the resolved grant). On success the verdict and the
@@ -78,12 +82,13 @@ module AtlasPca
       from_body(env)
     end
 
-    # Header path: base64url -> JSON text -> the SDK's strict JSON profile.
+    # Header path: strict unpadded base64url of strict UTF-8 (AtlasPca.decode_pca_header, 0.4.1) -> JSON text -> the
+    # SDK's strict JSON profile. Padding, the standard alphabet, whitespace or bytes that are not UTF-8 are a 401 here.
     def from_header(raw)
-      bin = AtlasPca.b64d(raw)
-      raise DecodeError, 'PCActn header is not canonical base64url' if bin.nil?
+      text = AtlasPca.decode_pca_header(raw)
+      raise DecodeError, 'PCActn header is not canonical base64url' if text.nil?
 
-      strict_object(bin.dup.force_encoding('UTF-8'))
+      strict_object(text)
     end
 
     # Body path: a JSON object { "pcactn": <PCActn object> }. The body is rewound so the

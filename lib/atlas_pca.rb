@@ -14,8 +14,16 @@ module AtlasPca
   DEFAULT_REV = 'reversible'
 
   MAX_CHAIN_HOPS = 16
+  # Shared hard caveat caps (all PCA verifiers): caveat lists are cumulative, so MAX_CAVEATS_PER_HOP bounds a hop's whole
+  # list and MAX_CAVEATS_PER_CHAIN the sum over hops (= the work of every attenuation prefix comparison).
+  MAX_CAVEATS_PER_HOP = 256
+  MAX_CAVEATS_PER_CHAIN = 1024
+  CAVEAT_LIMIT_REASON = "chain exceeds caveat limit (max #{MAX_CAVEATS_PER_HOP} per hop, #{MAX_CAVEATS_PER_CHAIN} per chain)".freeze
   MAX_JSON_DEPTH = 32
   MAX_JSON_CHARS = 1 << 20 # UTF-8 BYTES
+  # Shared raw wire-size cap of a PCActn JSON document (UTF-8 bytes), checked before any parsing.
+  MAX_ARTIFACT_BYTES = 524_288
+  ARTIFACT_SIZE_REASON = "artifact exceeds size limit (max #{MAX_ARTIFACT_BYTES} bytes)".freeze
   MAX_DECIMAL_DIGITS = 15
   MAX_LIFETIME_MS = 3_600_000
   MAX_SKEW_MS = 60_000
@@ -36,8 +44,9 @@ module AtlasPca
   # already-parsed objects): lone-surrogate escapes become invalid-encoding strings, numbers keep any
   # lexeme (Integer or Float), and depth/length caps are off. Verification re-validates every value anyway.
   class JsonParser
-    WS = [0x20, 0x09, 0x0a, 0x0d].freeze
-    NUM = /\A-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/n
+    # Anchored at the scan position (\G): lets the number / plain-string scans run in place with no substring copy.
+    NUM_AT = /\G-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/n
+    PLAIN_RUN = /\G[^"\\\x00-\x1f]+/n
 
     def initialize(text, loose, any_top)
       @loose = loose
@@ -66,7 +75,10 @@ module AtlasPca
     private
 
     def skip_ws
-      @i += 1 while WS.include?(@s.getbyte(@i))
+      s = @s
+      i = @i
+      i += 1 while (c = s.getbyte(i)) && (c == 0x20 || c == 0x0a || c == 0x0d || c == 0x09)
+      @i = i
     end
 
     def parse_value(depth)
@@ -154,7 +166,14 @@ module AtlasPca
 
     def parse_string
       @i += 1
-      out = String.new(encoding: Encoding::BINARY)
+      # Fast path: a plain run of bytes straight to the closing quote (the overwhelmingly common key / value string).
+      m = PLAIN_RUN.match(@s, @i)
+      out = m ? m[0] : String.new(encoding: Encoding::BINARY)
+      @i += out.bytesize
+      if @s.getbyte(@i) == 0x22
+        @i += 1
+        return out.force_encoding('UTF-8')
+      end
       loop do
         c = @s.getbyte(@i)
         raise Malformed, 'unterminated string' if c.nil?
@@ -162,6 +181,10 @@ module AtlasPca
         if c == 0x22
           @i += 1
           return out.force_encoding('UTF-8')
+        elsif c >= 0x20 && c != 0x5c
+          run = PLAIN_RUN.match(@s, @i)[0]
+          out << run
+          @i += run.bytesize
         elsif c < 0x20
           raise Malformed, 'raw control character in string'
         elsif c == 0x5c
@@ -180,9 +203,6 @@ module AtlasPca
           when 0x75 then unicode_escape(out)
           else raise Malformed, 'unknown escape'
           end
-        else
-          out << c.chr
-          @i += 1
         end
       end
     end
@@ -214,10 +234,13 @@ module AtlasPca
     end
 
     def parse_number
-      m = NUM.match(@s.byteslice(@i, 64 * 1024) || ''.b)
+      m = NUM_AT.match(@s, @i)
       raise Malformed, 'bad value' if m.nil?
 
       lex = m[0].dup.force_encoding('UTF-8')
+      # A lexeme beyond 64 KiB is rejected exactly as before (the old scan window truncated it and left trailing digits).
+      raise Malformed, 'bad value' if lex.bytesize > 64 * 1024
+
       @i += lex.bytesize
       return loose_number(lex) if @loose
 
@@ -231,6 +254,9 @@ module AtlasPca
 
   # Canonical-form number lexeme (README section 3). Returns Integer or Float.
   def strict_number_lexeme(lex)
+    # Fast path: a short canonical integer (<= 15 digits is always within MAX_SAFE; `-0` and leading zeros do not match).
+    return lex.to_i if lex.bytesize <= 15 && lex.match?(/\A(?:0|-?[1-9][0-9]*)\z/)
+
     raise Malformed, 'exponent not allowed' if lex.match?(/[eE]/)
 
     if lex.match?(/\A-?[0-9]+\z/)
@@ -251,8 +277,12 @@ module AtlasPca
   end
 
   # any_top: allow a non-object top-level value (only for the json_parse primitive table; PCActn bodies are objects)
+  # The loose mode has no depth cap (it reads the conformance file, which holds 100000-deep values): running out of stack
+  # there is a Malformed, never an escaping SystemStackError. The strict profile refuses depth > 32 before recursing.
   def parse_json(text, loose: false, any_top: false)
     JsonParser.new(text, loose, any_top).parse_document
+  rescue SystemStackError
+    raise Malformed, 'nesting too deep'
   end
 
   # Value-level number rule for already-parsed objects (and a second line of defence after parsing).
@@ -269,21 +299,29 @@ module AtlasPca
     end
   end
 
+  # A JSON string: a String tagged UTF-8 whose bytes are valid UTF-8 (object keys are always such strings), or tagged
+  # US-ASCII with valid (7-bit) bytes: ASCII is a subset of UTF-8, and Ruby tags many ASCII-only strings US-ASCII (e.g.
+  # Base64 output, Integer#to_s). BINARY / other encodings and invalid bytes are refused.
+  def utf8_string?(v)
+    v.is_a?(String) && (v.encoding == Encoding::UTF_8 || v.encoding == Encoding::US_ASCII) && v.valid_encoding?
+  end
+
   # Whole-object structural validation: depth, numbers, string encodings, key/value types.
   def tree_ok?(v, depth = 1)
     case v
     when nil, true, false then true
-    when String then v.encoding == Encoding::UTF_8 && v.valid_encoding?
+    when String then utf8_string?(v)
     when Integer, Float then number_ok?(v)
     when Array then depth <= MAX_JSON_DEPTH && v.all? { |x| tree_ok?(x, depth + 1) }
-    when Hash then depth <= MAX_JSON_DEPTH && v.all? { |k, x| tree_ok?(k, 0) && tree_ok?(x, depth + 1) }
+    when Hash then depth <= MAX_JSON_DEPTH && v.all? { |k, x| utf8_string?(k) && tree_ok?(x, depth + 1) }
     else false
     end
   end
 
   # ======================= base64url (strict) =======================
+  # UTF-8-tagged (Base64 returns US-ASCII), so a PCActn built natively from these strings carries ordinary JSON strings.
   def b64e(bin)
-    Base64.urlsafe_encode64(bin, padding: false)
+    Base64.urlsafe_encode64(bin, padding: false).force_encoding(Encoding::UTF_8)
   end
 
   # Strict RFC 4648 s5: no padding, alphabet only, len % 4 != 1, zero trailing bits (re-encode must match).
@@ -301,8 +339,12 @@ module AtlasPca
   end
 
   # ======================= canonicalization =======================
+  JS_ESCAPES = /["\\\x00-\x1f]/
+
   def js_string(s)
     raise Malformed, 'invalid string encoding' unless s.valid_encoding?
+    # Fast path: nothing to escape (no quote, backslash or control char) -> the string is emitted verbatim.
+    return "\"#{s}\"" unless s.match?(JS_ESCAPES)
 
     out = +'"'
     s.each_char do |c|
@@ -359,7 +401,9 @@ module AtlasPca
     end
   end
 
-  def ser(v, out)
+  # The strict canonical form (reference canonicalizeStrict): containers deeper than MAX_JSON_DEPTH (the outermost is
+  # depth 1) are refused BEFORE recursing, so a hostile value of any depth is a Malformed, never a SystemStackError.
+  def ser(v, out, depth = 1)
     case v
     when nil then out << 'null'
     when true then out << 'true'
@@ -367,20 +411,24 @@ module AtlasPca
     when String then out << js_string(v)
     when Integer, Float then out << fmt_number(v)
     when Array
+      raise Malformed, 'canonicalize: nesting too deep' if depth > MAX_JSON_DEPTH
+
       out << '['
       v.each_with_index do |x, i|
         out << ',' if i > 0
-        ser(x, out)
+        ser(x, out, depth + 1)
       end
       out << ']'
     when Hash
+      raise Malformed, 'canonicalize: nesting too deep' if depth > MAX_JSON_DEPTH
+
       # Keys sorted BYTEWISE over UTF-8 (== code point order), not UTF-16 code units.
       keys = v.keys.sort_by { |k| k.to_s.b }
       out << '{'
       keys.each_with_index do |k, i|
         out << ',' if i > 0
         out << js_string(k.to_s) << ':'
-        ser(v[k], out)
+        ser(v[k], out, depth + 1)
       end
       out << '}'
     else
@@ -621,13 +669,26 @@ module AtlasPca
 
   # Validate `alg`/`sig`/`pq_pk`/`pq_sig` per suite. Returns nil when well-formed, else a reason.
   def validate_signature_wire(p)
+    validate_suite_fields(p, true)
+  end
+
+  # 0.4.1: a threshold share's `alg`/`sig`/`pq_sig` per suite, exactly like the leaf (absent `alg` == ed25519: a 64-byte
+  # `sig` and no `pq_sig`), EXCEPT `pq_pk`: on a share it is an optional echo judged by verify_threshold_share against the
+  # signer set, so the wire does not look at it. Mirrors validateShareSignatureWire in packages/pca/src/pq.ts.
+  def validate_share_signature_wire(s)
+    validate_suite_fields(s, false)
+  end
+
+  def validate_suite_fields(p, check_pq_pk)
     suite, err = resolve_suite(p)
     return err if suite.nil?
 
     sig_bytes, needs_pk, needs_sig = SIG_SUITES[suite]
     return "'sig' is not canonical base64url (#{sig_bytes} bytes) for alg '#{suite}'" if b64d(p['sig'], sig_bytes).nil?
 
-    if needs_pk
+    if !check_pq_pk
+      # share: `pq_pk` is an optional echo, judged by verify_threshold_share against the signer set
+    elsif needs_pk
       return "'pq_pk' is not canonical base64url (#{ML_DSA_65_PUBLIC_KEY_BYTES} bytes)" if b64d(p['pq_pk'], ML_DSA_65_PUBLIC_KEY_BYTES).nil?
     elsif p.key?('pq_pk')
       return "'pq_pk' must be absent for alg '#{suite}'"
@@ -640,19 +701,68 @@ module AtlasPca
     nil
   end
 
-  # Verify the leaf signature under the PCActn's suite. FAIL-CLOSED.
-  def verify_leaf_suite(p, holder, msg)
+  # An opaque PQ verification key (R3-01 choke point). Instances are minted ONLY by `resolve_pq_key`, so the low-level PQ
+  # verification (`verify_suite`) cannot be reached with a `pq_pk` read straight off the artifact being verified.
+  class PinnedPq
+    MINT = Object.new.freeze
+    attr_reader :key, :source
+
+    def initialize(key, source, token)
+      raise ArgumentError, 'PinnedPq is minted only by resolve_pq_key' unless token.equal?(MINT)
+
+      @key = key
+      @source = source
+      freeze
+    end
+    private_class_method :new
+
+    def self.mint(key, source) = new(key, source, MINT)
+  end
+
+  # THE choke point (R3-01), mirroring resolvePqVerifyKey in packages/pca/src/pq.ts. Returns the key to verify under, or nil
+  # (REFUSE) when no verifier-side authority vouches for the artifact's `pq_pk`:
+  #   1. trusted_pk: a key the verifier itself holds (the stored grant). Used as is.
+  #   2. pq_pins[identity] (own entry only): artifact_pk MUST equal the pin; a differing pin is a refusal.
+  #   3. holder_pq: artifact_pk must hash to the signer's committed holder_pq (F-2).
+  # Natives have no allowUnboundPq: an artifact's own key is never enough.
+  def resolve_pq_key(identity, artifact_pk, holder_pq: nil, pq_pins: nil, trusted_pk: nil)
+    return PinnedPq.mint(trusted_pk, 'trusted') if trusted_pk.is_a?(String) && !trusted_pk.empty?
+    return nil unless artifact_pk.is_a?(String) && !artifact_pk.empty?
+
+    if pq_pins.is_a?(Hash) && identity.is_a?(String) && pq_pins.key?(identity)
+      return pq_pins[identity] == artifact_pk ? PinnedPq.mint(artifact_pk, 'pin') : nil
+    end
+    return PinnedPq.mint(artifact_pk, 'holder-commitment') if holder_pq.is_a?(String) && holder_pq_commitment(artifact_pk) == holder_pq
+
+    nil
+  end
+
+  def mldsa65_verify_pinned(pq, msg, sig_b64u)
+    return false unless pq.is_a?(PinnedPq)
+
+    mldsa65_verify_b64u(pq.key, msg, sig_b64u)
+  end
+
+  # Verify `p`'s signature(s) under its suite. FAIL-CLOSED. The PQ half verifies ONLY under `pq` (a PinnedPq), never under p['pq_pk'].
+  def verify_suite(p, holder, msg, pq)
     suite, = resolve_suite(p)
     return false if suite.nil?
 
     sig = p['sig']
     case suite
     when 'ed25519' then verify_b64u(holder, msg, sig)
-    when 'ml-dsa-65' then mldsa65_verify_b64u(p['pq_pk'], msg, sig)
+    when 'ml-dsa-65' then mldsa65_verify_pinned(pq, msg, sig)
     when 'hybrid-ed25519-ml-dsa-65'
-      verify_b64u(holder, msg, sig) && mldsa65_verify_b64u(p['pq_pk'], msg, p['pq_sig'])
+      verify_b64u(holder, msg, sig) && mldsa65_verify_pinned(pq, msg, p['pq_sig'])
     else false
     end
+  end
+
+  # Verify a signature under the ARTIFACT'S OWN `pq_pk`. Only for surfaces whose key is authorised elsewhere (threshold shares,
+  # the pq_artifact conformance primitives): it proves nothing about who issued `p`. The chain and the PCActn leaf never call
+  # it; they resolve their key through `resolve_pq_key`.
+  def verify_leaf_suite(p, holder, msg)
+    verify_suite(p, holder, msg, resolve_pq_key(nil, p['pq_pk'], trusted_pk: p['pq_pk']))
   end
 
   # ======================= v2.1 threshold-share binding =======================
@@ -670,10 +780,14 @@ module AtlasPca
     entries = signer_set.map do |e|
       return nil unless e.is_a?(Hash) && e['publicKey'].is_a?(String) && e['role'].is_a?(String)
 
-      { 'publicKey' => e['publicKey'], 'role' => e['role'] }
+      row = { 'publicKey' => e['publicKey'], 'role' => e['role'] }
+      row['pq_pk'] = e['pq_pk'] if e['pq_pk'].is_a?(String) # additive: a registered PQ key is part of the bound set
+      row
     end
     entries.sort_by! { |e| [e['role'].b, e['publicKey'].b] }
     sha(SIGNERSET_DOMAIN + canon_bytes(entries))
+  rescue Malformed
+    nil # a string that is not valid UTF-8 has no canonical form
   end
 
   # Verify a threshold share's signature over `msg` under its suite (ed25519 by default; ml-dsa-65 / hybrid
@@ -697,24 +811,93 @@ module AtlasPca
   # are NOT trusted — then `share.sig` must verify over it. FAIL-CLOSED: any missing / ill-typed field, bad
   # base64url, t not in {1,2,3}, or unknown share suite returns false (never accepted). This is exactly why
   # the pre-v2.1 bare-threshold-message agent share and a cross-signer-set replay are rejected.
+  THRESHOLD_ROLES = %w[agent guardian principal].freeze
+  # Registered PQ public-key lengths of every suite (ml-dsa-65/87, slh-dsa-128f/256s, fn-dsa-512/1024, less-cat1),
+  # implemented here or not: the signer set is validated exactly like the reference.
+  PQ_PK_LENGTHS = [1952, 2592, 32, 64, 897, 1793, 97_484].freeze
+
+  # R6-03: validate the WHOLE signer set like the reference (verifyThreshold / Threshold.dfy BuildReg) and return
+  # { role => [publicKey, pq_pk_or_nil] }, or nil if it is malformed: every entry a Hash with a known role and a
+  # canonical 32-byte base64url publicKey; a PRESENT pq_pk (JSON null is present) canonical base64url of a registered
+  # PQ key length; one key per role, one role per key; a duplicate (role, key) entry only with the same pq_pk.
+  def signer_registry(signer_set)
+    return nil unless signer_set.is_a?(Array)
+
+    reg = {}
+    role_of_key = {}
+    signer_set.each do |e|
+      return nil unless e.is_a?(Hash)
+
+      role = e['role']
+      pk = e['publicKey']
+      return nil unless role.is_a?(String) && THRESHOLD_ROLES.include?(role) && pk.is_a?(String) && !b64d(pk, 32).nil?
+
+      pq = nil
+      if e.key?('pq_pk')
+        pq = e['pq_pk']
+        raw = pq.is_a?(String) ? b64d(pq) : nil
+        return nil if raw.nil? || !PQ_PK_LENGTHS.include?(raw.bytesize)
+      end
+      if reg.key?(role)
+        return nil unless reg[role] == [pk, pq] # two keys for one role, or a conflicting pq_pk
+
+        next
+      end
+      return nil if role_of_key.fetch(pk, role) != role # one key under two roles
+
+      reg[role] = [pk, pq]
+      role_of_key[pk] = role
+    end
+    reg
+  end
+
+  # Verify a threshold share against the v2.1 binding. The bound message is RECOMPUTED here from
+  # (role, thresholdMessage, signer_set, t); the WHOLE signer set is validated first (R6-03), `t` must be 1, 2
+  # or 3 (R6-04), the share must be for the ONE key the set registers for `role`, and a role that registers a
+  # pq_pk needs a PQ / hybrid share verified ONLY under that registered key (R6-02). TOTAL and FAIL-CLOSED
+  # (R6-05): any malformed input (of any JSON shape) returns false, never raises.
   def verify_threshold_share(entry)
     return false unless entry.is_a?(Hash)
 
     role = entry['role']
     t = entry['t']
-    return false unless role.is_a?(String) && !role.empty?
+    t = t.to_i if t.is_a?(Float) && t.finite? && t == t.to_i # JS number semantics: 1.0 == 1
+    return false unless role.is_a?(String)
     return false unless t.is_a?(Integer) && [1, 2, 3].include?(t)
 
     tmsg = b64d(entry['threshold_message'])
     return false if tmsg.nil?
 
+    reg = signer_registry(entry['signer_set'])
+    return false if reg.nil?
+
     ssh = signer_set_hash(entry['signer_set'])
     return false if ssh.nil?
 
     share = entry['share']
-    return false unless share.is_a?(Hash)
+    return false unless share.is_a?(Hash) && share['role'].is_a?(String) && share['role'] == role
+    return false unless reg.key?(role)
 
-    bound = "atlas-pca/share/#{role}\x00".b + sha(tmsg) + ssh + [t].pack('C')
+    reg_pk, reg_pq = reg[role]
+    return false unless share['publicKey'] == reg_pk
+
+    suite, = resolve_suite(share)
+    return false if suite.nil?
+    # A share that NAMES a pq_pk must name exactly its role's registered one (any suite; a role registering none has
+    # nothing it could equal). The key used is always the registered one.
+    return false if share.key?('pq_pk') && (!reg_pq.is_a?(String) || share['pq_pk'] != reg_pq)
+    # R6-02: a role that registers a pq_pk REQUIRES a PQ (pure or hybrid) share; an ed25519-only share for it
+    # is refused (otherwise an Ed25519 break would still forge the role).
+    return false if suite == 'ed25519' && !reg_pq.nil?
+
+    tag = ''.b
+    if suite != 'ed25519'
+      return false unless reg_pq.is_a?(String)
+
+      share = share.merge('pq_pk' => reg_pq) # verify ONLY under the registered PQ key
+      tag = "\x00atlas-pca/share-suite/v1\x00#{suite}".b
+    end
+    bound = "atlas-pca/share/#{role}\x00".b + sha(tmsg) + ssh + [t].pack('C') + tag
     verify_share_suite(share, bound)
   rescue StandardError
     false
@@ -753,7 +936,38 @@ module AtlasPca
   end
 
   def body_of(c)
-    { 'issuer' => c['issuer'], 'holder' => c['holder'], 'caveats' => c['caveats'], 'parent' => c['parent'] }
+    body = { 'issuer' => c['issuer'], 'holder' => c['holder'], 'caveats' => c['caveats'], 'parent' => c['parent'] }
+    body['holder_pq'] = c['holder_pq'] if c.key?('holder_pq')
+    body
+  end
+
+  HOLDER_PQ_DOMAIN = "atlas-pca/holder-pq/v1\0".b.freeze
+
+  def holder_pq_commitment(pq_pk)
+    b64e(Digest::SHA256.digest(HOLDER_PQ_DOMAIN + pq_pk.dup.force_encoding('UTF-8').b))
+  end
+
+  # allowedSuites policy (absent `alg` == ed25519). nil == no policy; [] refuses everything. Returns reason or nil.
+  def suite_policy_error(alg, label, allowed)
+    return nil if allowed.nil?
+
+    a = alg.nil? ? 'ed25519' : alg
+    return nil if a.is_a?(String) && allowed.include?(a)
+
+    "#{label}: signature suite '#{a}' is not allowed by this verifier's suite policy"
+  end
+
+  # F-2: a PQ-carrying suite is accepted only under a pq_pk the signer's holder committed to (holder_pq).
+  def pq_binding_error(alg, pq_pk, committed, label)
+    a = alg.nil? ? 'ed25519' : alg
+    return nil unless a.is_a?(String) && SIG_SUITES.key?(a) && SIG_SUITES[a][1]
+
+    unless committed.is_a?(String)
+      return "#{label}: suite '#{a}' needs a PQ key bound to the signer, but the signer's holder carries no holder_pq commitment (unbound PQ keys are rejected; F-2)"
+    end
+    return "#{label}: pq_pk does not match the signer's committed holder_pq (F-2)" unless pq_pk.is_a?(String) && holder_pq_commitment(pq_pk) == committed
+
+    nil
   end
 
   # body_of + the suite fields (`alg`, `pq_pk`) bound in for a non-default suite (so a downgrade or ML-DSA
@@ -772,7 +986,7 @@ module AtlasPca
     [body, nil]
   end
 
-  def check_sig(c, signer, label)
+  def check_sig(c, signer, label, pq = nil)
     # Unknown suite => fail-closed (before any hashing), mirroring capability.ts checkSig.
     body, err = signable_hop_body(c)
     return "#{label}: #{err}" if body.nil?
@@ -787,36 +1001,103 @@ module AtlasPca
     msg = CAP_DOMAIN + d
     # Suite-agile hop verification: ed25519 == verify_b64u(signer, msg, sig); hybrid requires BOTH the
     # Ed25519 `sig` (under `signer`) AND the ML-DSA `pq_sig` (under `pq_pk`); pure ml-dsa-65 verifies `sig`
-    # under `pq_pk`. verify_leaf_suite dispatches on the hop's `alg` (the signer is the expected Ed25519 key).
-    return "#{label}: bad signature (not signed by expected key)" unless verify_leaf_suite(c, signer, msg)
+    # under the resolved `pq` key (never the hop's own pq_pk); the signer is the expected Ed25519 key.
+    return "#{label}: bad signature (not signed by expected key)" unless verify_suite(c, signer, msg, pq)
 
     ''
   end
 
-  # Returns [reason, ok]
-  def verify_chain(chain, expected_root_issuer, have_issuer)
-    return ['empty chain', false] if chain.empty?
+  # True when a chain breaks the shared caveat caps. Reads raw array lengths only: runs BEFORE any hashing/signature work.
+  def caveat_limit_exceeded?(chain)
+    total = 0
+    chain.each do |c|
+      cv = c.is_a?(Hash) ? c['caveats'] : nil
+      n = cv.is_a?(Array) ? cv.length : 0
+      return true if n > MAX_CAVEATS_PER_HOP
+
+      total += n
+      return true if total > MAX_CAVEATS_PER_CHAIN
+    end
+    false
+  end
+
+  ROOT_PQ_PIN_REASON = "hop 0: root suite '%s' needs a PQ key pinned for the root issuer (policy.pqPins) or the verifier's stored grant " \
+                       "(policy.trustedRoot); the root's own pq_pk proves nothing about who issued it (R3-01)"
+
+  # The root hop has no parent holding a holder_pq commitment, so a non-ed25519 root's PQ key must come from a verifier-side
+  # authority: the verifier's stored copy of this very grant (trusted_root, same content hash) or a pin for root.issuer.
+  # Returns [PinnedPq or nil, reason or nil]; mirrors rootPq in capability.ts.
+  def resolve_root_pq(root, pq_pins, trusted_root)
+    suite, = resolve_suite(root)
+    return [nil, nil] if suite.nil? || !SIG_SUITES[suite][1]
+
+    pk = root['pq_pk']
+    trusted = nil
+    if !trusted_root.nil? && pk.is_a?(String)
+      begin
+        trusted = pk if cap_hash(trusted_root) == cap_hash(root)
+      rescue StandardError
+        trusted = nil
+      end
+    end
+    key = resolve_pq_key(root['issuer'], pk, pq_pins: pq_pins, trusted_pk: trusted)
+    key.nil? ? [nil, format(ROOT_PQ_PIN_REASON, suite)] : [key, nil]
+  end
+
+  # Returns [reason, ok]. A non-ed25519 (pure-PQ or hybrid) ROOT is accepted only if `pq_pins[root.issuer]` equals the root's
+  # `pq_pk`, or `trusted_root` is the root itself (the verifier's own stored grant); otherwise it is refused (R4-01).
+  def verify_chain(chain, expected_root_issuer, have_issuer, allowed_suites = nil, pq_pins = nil, trusted_root = nil)
+    verify_chain_unchecked(chain, expected_root_issuer, have_issuer, allowed_suites, pq_pins, trusted_root)
+  rescue StandardError => e
+    # TOTAL (R6-05): a hostile chain is a refusal, never an exception.
+    ["malformed capability chain: #{e.class}", false]
+  end
+
+  # Mirrors `wellTyped` in capability.ts: id/issuer/holder/body_digest/sig Strings; alg/pq_pk/pq_sig/holder_pq/parent
+  # absent or Strings (JSON null is NOT absent); caveats an Array of Hashes each with a String `type`. A correctly
+  # SIGNED but ill-typed hop is refused like in the reference.
+  def hop_well_typed?(c)
+    return false unless c.is_a?(Hash)
+    return false unless %w[id issuer holder body_digest sig].all? { |k| c[k].is_a?(String) }
+    return false unless %w[alg pq_pk pq_sig holder_pq parent].all? { |k| !c.key?(k) || c[k].is_a?(String) }
+
+    c['caveats'].is_a?(Array) && c['caveats'].all? { |cv| cv.is_a?(Hash) && cv['type'].is_a?(String) }
+  end
+
+  def verify_chain_unchecked(chain, expected_root_issuer, have_issuer, allowed_suites, pq_pins, trusted_root)
+    return ['empty chain', false] unless chain.is_a?(Array) && !chain.empty?
     return ["chain longer than #{MAX_CHAIN_HOPS} capabilities", false] if chain.length > MAX_CHAIN_HOPS
+    return [CAVEAT_LIMIT_REASON, false] if caveat_limit_exceeded?(chain)
 
     root = chain[0]
-    return ['hop 0: malformed', false] unless root.is_a?(Hash)
+    return ['hop 0: malformed capability', false] unless hop_well_typed?(root)
     return ['hop 0: root must not have a parent', false] if root.key?('parent')
     if have_issuer && root['issuer'] != expected_root_issuer
       return ['hop 0: root issuer is not the expected principal', false]
     end
 
-    e = check_sig(root, root['issuer'].is_a?(String) ? root['issuer'] : '', 'hop 0')
+    pe = suite_policy_error(root['alg'], 'hop 0', allowed_suites)
+    return [pe, false] if pe
+
+    root_pq, rerr = resolve_root_pq(root, pq_pins, trusted_root)
+    return [rerr, false] if rerr
+
+    e = check_sig(root, root['issuer'].is_a?(String) ? root['issuer'] : '', 'hop 0', root_pq)
     return [e, false] unless e.empty?
 
     (1...chain.length).each do |i|
       parent = chain[i - 1]
       c = chain[i]
       label = "hop #{i}"
-      return ["#{label}: malformed", false] unless parent.is_a?(Hash) && c.is_a?(Hash)
+      return ["#{label}: malformed capability", false] unless hop_well_typed?(c)
       return ["#{label}: broken parent link", false] if c['parent'] != cap_hash(parent)
       return ["#{label}: issuer is not the parent's bound holder", false] if c['issuer'] != parent['holder']
 
-      e = check_sig(c, parent['holder'].is_a?(String) ? parent['holder'] : '', label)
+      pe = suite_policy_error(c['alg'], label, allowed_suites) || pq_binding_error(c['alg'], c['pq_pk'], parent['holder_pq'], label)
+      return [pe, false] if pe
+
+      e = check_sig(c, parent['holder'].is_a?(String) ? parent['holder'] : '', label,
+                    resolve_pq_key(parent['holder'], c['pq_pk'], holder_pq: parent['holder_pq']))
       return [e, false] unless e.empty?
 
       pc = parent['caveats'].is_a?(Array) ? parent['caveats'] : []
@@ -841,7 +1122,7 @@ module AtlasPca
   HOP_REQUIRED = %w[id issuer holder body_digest caveats sig].freeze
   # B4 crypto-agility (additive) on a hop exactly as at the top level: absent `alg` == ed25519, in which
   # case `pq_pk`/`pq_sig` MUST be absent and the hop is BYTE-IDENTICAL to the pre-B4 wire.
-  HOP_OPTIONAL = %w[parent alg pq_pk pq_sig].freeze
+  HOP_OPTIONAL = %w[parent alg pq_pk pq_sig holder_pq].freeze
 
   def b32?(x)
     !b64d(x, 32).nil?
@@ -862,6 +1143,8 @@ module AtlasPca
     # Absent `alg` asserts a 64-byte `sig` and that `pq_pk`/`pq_sig` are absent (byte-identical pre-B4 hop).
     return false unless validate_signature_wire(c).nil? && c['caveats'].is_a?(Array)
     return false unless c['caveats'].all? { |cv| cv.is_a?(Hash) && cv['type'].is_a?(String) }
+
+    return false if c.key?('holder_pq') && !b32?(c['holder_pq'])
 
     !c.key?('parent') || b32?(c['parent'])
   end
@@ -895,7 +1178,9 @@ module AtlasPca
     sh = th['shares']
     # `threshold` must be {shares:[...]} (reference: wire.ts); a missing/null `shares` is a wire failure, not a pass.
     return false unless sh.is_a?(Array) && sh.all? do |s|
-      s.is_a?(Hash) && s['role'].is_a?(String) && b32?(s['publicKey']) && b64?(s['sig'])
+      # 0.4.1: the share signature is validated PER SUITE (it used to be a fixed 64 bytes, so a pure post-quantum share
+      # could never be carried).
+      s.is_a?(Hash) && s['role'].is_a?(String) && b32?(s['publicKey']) && validate_share_signature_wire(s).nil?
     end
 
     true
@@ -945,6 +1230,150 @@ module AtlasPca
     false
   end
 
+  # ======================= PCA-Action header (0.4.1) =======================
+  # Decode a `PCA-Action` header value to the PCActn JSON text (a UTF-8 String), or nil. STRICT, like decodePcaHeader in
+  # packages/pca/src/adapters.ts: non-empty; unpadded base64url alphabet only (A-Z a-z 0-9 - _), no `=`, no `+`/`/`, no
+  # whitespace anywhere (nothing is stripped), length % 4 != 1, zero unused trailing bits; and the bytes must be valid
+  # UTF-8 (no overlong forms, surrogates or truncated sequences). A leading BOM is kept (the strict JSON parser refuses
+  # it). Nothing is normalized, so one PCActn has exactly one header spelling.
+  def decode_pca_header(value)
+    return nil unless value.is_a?(String) && !value.empty?
+
+    bin = b64d(value)
+    return nil if bin.nil?
+
+    text = bin.dup.force_encoding(Encoding::UTF_8)
+    text.valid_encoding? ? text : nil
+  end
+
+  # ======================= policy-layer caveat helpers (0.4.1) =======================
+  # The core verifier (verify_pcactn) and RackMiddleware do NOT evaluate caveats. A resource server that enforces a grant's
+  # caveats calls evaluate_caveats(policy_caveats(grant, chain), ctx) with its own action params. 0.4.1 security fix (the
+  # TypeScript policy layer): caveats on the ROOT grant outside the envelope are enforced exactly like delegated ones; this
+  # helper pair includes them.
+  ENVELOPE_CAVEAT = 'envelope'
+  REVERSIBILITY_ORDER = %w[reversible rate_limited irreversible].freeze
+
+  # Every caveat the policy layer evaluates for an action under `grant` delegated along `chain` (root first), like
+  # policyCaveats in packages/pca/src/policy-vm.ts: the grant's caveats without its FIRST `envelope` caveat (order kept),
+  # then the caveats the hops appended (`leaf['caveats']` beyond the grant's, leaf = the last chain element). A grant whose
+  # `caveats` is not an Array hands that value through (evaluate_caveats refuses it).
+  def policy_caveats(grant, chain = nil)
+    cs = grant.is_a?(Hash) ? grant['caveats'] : nil
+    return cs unless cs.is_a?(Array)
+
+    i = cs.index { |c| c.is_a?(Hash) && c['type'] == ENVELOPE_CAVEAT }
+    root = i.nil? ? cs.dup : cs[0...i] + cs[(i + 1)..]
+    leaf = chain.is_a?(Array) && !chain.empty? ? chain[-1] : nil
+    lc = leaf.is_a?(Hash) ? leaf['caveats'] : nil
+    lc.is_a?(Array) ? root + (lc[cs.length..] || []) : root
+  end
+
+  # Evaluate a caveat list against an action context. Returns [ok, failed]: ok iff every caveat is satisfied; failed = the
+  # unsatisfied caveats' `type` strings in order ('<malformed>' when `type` is not a String). A non-Array list gives
+  # [false, ['<malformed caveats>']]. Total: never raises. Fail closed: a type this evaluator does not implement (note,
+  # envelope, resource_prefix, predicates, tool_schema, ...) is unsatisfied.
+  # `ctx` is a JSON object Hash with String keys: now (epoch ms), delegation_depth?, blast_radius?, reversibility_class?,
+  # recent_action_times?, action {verb, resource, reversibility_class, params}. Numbers are Integer / Float (finite). Semantics
+  # mirror agentNativeCaveatEvaluator + envelopeCaveatEvaluator (packages/pca/src):
+  #  - max_spend {usd}: usd finite >= 0; ctx.action.params (a Hash) has an own finite `amount` with 0 <= amount <= usd, and an
+  #    own `currency`, when present, is exactly "usd" or "USD". Does not need `now`.
+  #  - everything below needs a finite ctx.now: expires {at} now < at; not_before {at} now >= at; rate {max, per_secs} fewer
+  #    than max entries t of recent_action_times with now - per_secs*1000 < t <= now; max_blast_radius {max} blast_radius <=
+  #    max; reversibility_max {class} ctx.reversibility_class no more severe than class; delegation_depth {max} depth <= max;
+  #    budget_alloc {limit} limit finite >= 0.
+  def evaluate_caveats(caveats, ctx)
+    return [false, ['<malformed caveats>']] unless caveats.is_a?(Array)
+
+    failed = []
+    caveats.each do |cv|
+      ok = begin
+        caveat_satisfied?(cv, ctx)
+      rescue StandardError
+        false
+      end
+      next if ok
+
+      t = cv.is_a?(Hash) ? cv['type'] : nil
+      failed << (t.is_a?(String) ? t : '<malformed>')
+    end
+    [failed.empty?, failed]
+  end
+
+  # A finite JSON number (Integer, or a finite Float), else nil. true/false are not numbers.
+  def finite_num(x)
+    f = if x.is_a?(Integer) then x.to_f # as a JSON number reads: a huge integer lexeme is a non-finite double
+        elsif x.is_a?(Float) then x
+        end
+    f&.finite? ? f : nil
+  end
+
+  # The action's spend in USD as max_spend reads it (own params.amount, finite >= 0, currency absent / "usd" / "USD").
+  def action_spend_usd(action)
+    return nil unless action.is_a?(Hash)
+
+    params = action['params']
+    return nil unless params.is_a?(Hash) && params.key?('amount')
+
+    amount = finite_num(params['amount'])
+    return nil if amount.nil? || amount.negative?
+    return nil if params.key?('currency') && params['currency'] != 'usd' && params['currency'] != 'USD'
+
+    amount
+  end
+
+  def caveat_satisfied?(cv, ctx)
+    return false unless cv.is_a?(Hash) && ctx.is_a?(Hash)
+
+    type = cv['type']
+    if type == 'max_spend'
+      lim = finite_num(cv['usd'])
+      return false if lim.nil? # a negative limit admits nothing: every readable spend is >= 0
+
+      spend = action_spend_usd(ctx['action'])
+      return !spend.nil? && spend <= lim
+    end
+    now = finite_num(ctx['now'])
+    return false if now.nil?
+
+    case type
+    when 'expires'
+      at = finite_num(cv['at'])
+      !at.nil? && now < at
+    when 'not_before'
+      at = finite_num(cv['at'])
+      !at.nil? && now >= at
+    when 'rate'
+      max = finite_num(cv['max'])
+      per = finite_num(cv['per_secs'])
+      times = ctx['recent_action_times']
+      return false if max.nil? || per.nil? || per <= 0 || !times.is_a?(Array)
+
+      lo = now - (per * 1000)
+      times.count { |t| (tf = finite_num(t)) && tf > lo && tf <= now } < max
+    when 'max_blast_radius'
+      max = finite_num(cv['max'])
+      br = finite_num(ctx['blast_radius'])
+      !max.nil? && !br.nil? && br <= max
+    when 'reversibility_max'
+      cls = cv['class']
+      cur = ctx['reversibility_class']
+      # strict types without a separate guard: REVERSIBILITY_ORDER holds only Strings, so a non-String class has no index
+      li = REVERSIBILITY_ORDER.index(cls)
+      ci = REVERSIBILITY_ORDER.index(cur)
+      !li.nil? && !ci.nil? && ci <= li
+    when 'delegation_depth'
+      max = finite_num(cv['max'])
+      d = finite_num(ctx['delegation_depth'])
+      !max.nil? && !d.nil? && d <= max
+    when 'budget_alloc'
+      lim = finite_num(cv['limit'])
+      !lim.nil? && lim >= 0
+    else
+      false
+    end
+  end
+
   # ======================= PCActn =======================
   def threshold_message(p)
     # `sig`, `threshold` and the B4 `pq_sig` are unsigned (stripped); `alg`/`pq_pk` ARE signed.
@@ -954,8 +1383,18 @@ module AtlasPca
 
   # pcactn: parsed Hash OR raw JSON text (String) which MUST pass the strict profile (failure == wire).
   # Returns Verdict. Wire failure is terminal: checks == { 'wire' => false }.
-  def verify_pcactn(pcactn, grant, now:, audience:)
+  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil)
+    verify_pcactn_unchecked(pcactn, grant, now: now, audience: audience, allowed_suites: allowed_suites)
+  rescue StandardError => e
+    # TOTAL (R6-05): a residual fault on hostile input is a terminal wire refusal, never an exception.
+    Verdict.new(false, { 'wire' => false }, "wire: malformed input (#{e.class})")
+  end
+
+  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil)
     if pcactn.is_a?(String)
+      # FIRST: before any parsing (String#bytesize is the raw byte length)
+      return Verdict.new(false, { 'wire' => false }, "wire: #{ARTIFACT_SIZE_REASON}") if pcactn.bytesize > MAX_ARTIFACT_BYTES
+
       begin
         pcactn = parse_json(pcactn)
       rescue Malformed
@@ -988,11 +1427,13 @@ module AtlasPca
     run.call('chain', 'capability chain invalid') do
       if chain.empty? || chain.length > MAX_CHAIN_HOPS
         false
+      elsif caveat_limit_exceeded?(chain)
+        false
       elsif cap_hash(chain[0]) != cap_hash(grant)
         false
       else
         gi = grant['issuer']
-        verify_chain(chain, gi, gi.is_a?(String)).last
+        verify_chain(chain, gi, gi.is_a?(String), allowed_suites, nil, grant).last # chain[0] == grant was checked above
       end
     end
 
@@ -1012,7 +1453,14 @@ module AtlasPca
     end
 
     run.call('leaf_signature', 'signature does not verify under the leaf holder key') do
-      !chain.empty? && verify_leaf_suite(pcactn, chain[-1]['holder'], threshold_message(pcactn))
+      if chain.empty?
+        false
+      else
+        lerr = suite_policy_error(pcactn['alg'], 'leaf', allowed_suites) ||
+               pq_binding_error(pcactn['alg'], pcactn['pq_pk'], chain[-1]['holder_pq'], 'leaf')
+        lerr.nil? && verify_suite(pcactn, chain[-1]['holder'], threshold_message(pcactn),
+                                  resolve_pq_key(chain[-1]['holder'], pcactn['pq_pk'], holder_pq: chain[-1]['holder_pq']))
+      end
     end
 
     run.call('counter', 'not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }

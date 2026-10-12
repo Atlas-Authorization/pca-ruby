@@ -1,0 +1,51 @@
+name: CI
+
+# Plain Ruby runners (no test framework dependency): the shared conformance corpus (conformance.rb), the Rack
+# middleware and 0.4.1 suites, and the mutation-kill registry.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Ruby ${{ matrix.ruby }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-26.04 (OpenSSL 3.5) gives the openssl extension ML-DSA; ubuntu-24.04 (OpenSSL 3.0) exercises the
+        # path where it is missing and the ML-DSA vectors must be skipped, never passed or failed
+        # (3.1/3.2 + OpenSSL 3.5 fail Ed25519 verification in 0.4.1: their bundled openssl gem predates OpenSSL 3.5)
+        os: [ubuntu-26.04]
+        ruby: ['3.3', '3.4']
+        include:
+          - { os: ubuntu-24.04, ruby: '3.3' }
+          - { os: windows-latest, ruby: '3.3' }
+          - { os: macos-latest, ruby: '3.3' }
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - name: Full adversarial corpus from the flagship
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: Conformance corpus
+        run: ruby conformance.rb
+      - name: Rack middleware
+        run: ruby -Ilib -Itest test/test_middleware.rb
+      - name: 0.4.1 suite
+        run: ruby -Ilib test/test_r041.rb
+      - name: Mutation-kill registry
+        run: ruby -Ilib test/run_kill.rb

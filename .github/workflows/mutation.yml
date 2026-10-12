@@ -1,0 +1,96 @@
+name: Mutation
+
+# Mutation testing of the verifier (lib/atlas_pca.rb) with the AST mutator in the flagship (tools/pca-audit/ruby-mutate;
+# oracle = the kill tests + core/adversarial corpus + every conformance table + the reason snapshot), split into shards
+# (mutant id mod 8) on separate runners. The merge job checks the survivors against the equivalent-mutant ledger: it passes
+# when every survivor is a ledgered equivalent and no ledger entry is stale. Runs on demand and on ci/** branches (the
+# release-candidate check), never on main pushes. ubuntu-26.04 with its distro Ruby: the oracle's ML-DSA-65 vectors need a
+# Ruby openssl built against OpenSSL >= 3.5 (the ubuntu-24.04 Rubies link 3.0 and fail them).
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CRATE: ruby-pca
+  SHARDS: '8'
+  TARGET: lib/atlas_pca.rb
+
+jobs:
+  shard:
+    name: shard ${{ matrix.shard }}/8
+    runs-on: ubuntu-26.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruby (distro, OpenSSL >= 3.5)
+        run: |
+          sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ruby ruby-dev build-essential >/dev/null
+          ruby -v && ruby -ropenssl -e 'puts OpenSSL::OPENSSL_LIBRARY_VERSION'
+          sudo gem install --no-document parser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship tooling
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - name: Mutate
+        working-directory: ${{ env.MONO }}/tools/pca-audit/ruby-mutate
+        run: |
+          F="../../../sdks/$CRATE/$TARGET"
+          ruby mutate.rb "$F" --list 2>/dev/null > "$RUNNER_TEMP/list.tsv"
+          ids="$(awk -F'\t' -v k=${{ matrix.shard }} -v n="$SHARDS" '($1 % n) == (k - 1) { printf "%s%s", s, $1; s="," }' "$RUNNER_TEMP/list.tsv")"
+          echo "mutants: $(wc -l < "$RUNNER_TEMP/list.tsv") total, $(tr ',' '\n' <<<"$ids" | wc -l) in this shard"
+          # a mutant that allocates without bound must die alone (killed), not exhaust the runner
+          ulimit -v 3145728
+          ruby mutate.rb "$F" --jobs 4 --timeout 300 --only "$ids" > "$RUNNER_TEMP/raw.json" 2> >(grep -v 'warning: parser\|Please see' >&2)
+      - name: Report
+        run: |
+          node -e '
+            const fs = require("fs"); const raw = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const file = process.argv[2];
+            const counts = {}; for (const m of raw) counts[m.status] = (counts[m.status] || 0) + 1;
+            const surv = raw.filter((m) => m.status === "SURVIVED").map((m) => ({ crate: "ruby-pca", file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, lineno: m.line, ...(m.fn ? { fn: m.fn } : {}) }));
+            fs.writeFileSync("counts.json", JSON.stringify(counts)); fs.writeFileSync("survivors.json", JSON.stringify(surv));
+          ' "$RUNNER_TEMP/raw.json" "$TARGET"
+          node .github/scripts/mutation-shard-report.mjs --crate="$CRATE" --shard=${{ matrix.shard }} --of="$SHARDS" --tool=ruby-mutate \
+            --counts=counts.json --survivors=survivors.json --out=shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+
+  merge:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship checker + ledger
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+      - name: Merge shards and check the ledger
+        run: >
+          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports
+          --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: survivors-merged
+          path: reports/survivors-merged.json
+          if-no-files-found: ignore

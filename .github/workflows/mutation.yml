@@ -1,0 +1,236 @@
+name: Mutation
+
+# Mutation testing of the verifier library, every file of lib/ (atlas_pca.rb and the lib/atlas_pca/* extensions it
+# require_relative's), with the AST mutator in the flagship (tools/pca-audit/ruby-mutate; oracle = the kill tests +
+# core/adversarial corpus + every conformance table + the reason snapshot; a mutant of an extension file is evaluated with
+# the library and every other extension re-loaded). 27 shards: the large files are split by mutant id (slice k of m = ids
+# with id % m == k - 1), the three small files share one shard; the plan check fails when lib/ gains a file the matrix does
+# not list. The merge job checks the survivors against the equivalent-mutant ledger: it passes when every survivor is a
+# ledgered equivalent and no ledger entry is stale. Runs on demand and on ci/** branches (the release-candidate check),
+# never on main pushes. ubuntu-26.04 + setup-ruby: the openssl extension gets ML-DSA from OpenSSL 3.5 (the CI's green
+# configuration); libatlas_less is built for the LESS suites.
+# The reason snapshot is written on the runner from the UNMUTATED source before mutating (it is a characterization oracle:
+# "same output as the original, on this host's backends"); a committed copy that differs only gets a warning. A stale
+# committed snapshot (and a hard-coded suite list) made every shard's baseline fail in run 38330627498.
+#
+# TARGETED mode (the default whenever a baseline exists; the pca-java/pca-kotlin scheme): every shard uploads
+# mut-results-<k> (per file: every mutant's result, carried ones included, and the source it mutated) and the next run
+# feeds the baseline run's results back (mutate.rb --carry), re-running ONLY what can have changed: mutants the baseline
+# never saw, its non-kills (new kill tests may kill them), and every mutant of a def containing a changed line (a change
+# outside every def re-runs the file). Every other result is carried forward, so each shard still reports its COMPLETE
+# mutant set and the merge checks the ledger over the full picture. Baseline = the input `baseline_run`, else the newest
+# earlier run of this workflow on the same branch with results; none (or `full: true`) = a full run, which seeds the next.
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_run:
+        description: 'run id whose mut-results-<k> artifacts seed a targeted run (default: newest earlier run on this branch)'
+        required: false
+        default: ''
+      full:
+        description: 'ignore any baseline results: mutate everything'
+        type: boolean
+        default: false
+  push:
+    branches: ['ci/**']
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CRATE: ruby-pca
+  SHARDS: '45'
+  # every file of lib/, as listed in the matrix below (checked by the shard step)
+  PLAN_FILES: >-
+    lib/atlas_pca.rb lib/atlas_pca/intent_v2.rb lib/atlas_pca/intent_wb.rb lib/atlas_pca/predicates.rb
+    lib/atlas_pca/safe_regex.rb lib/atlas_pca/rack_middleware.rb lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb
+
+jobs:
+  shard:
+    name: shard ${{ matrix.shard }}/27 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: 1, files: lib/atlas_pca.rb, slice: 1, of: 4 }
+          - { shard: 2, files: lib/atlas_pca.rb, slice: 2, of: 4 }
+          - { shard: 3, files: lib/atlas_pca.rb, slice: 3, of: 4 }
+          - { shard: 4, files: lib/atlas_pca.rb, slice: 4, of: 4 }
+          - { shard: 5, files: lib/atlas_pca/intent_v2.rb, slice: 1, of: 24 }
+          - { shard: 6, files: lib/atlas_pca/intent_v2.rb, slice: 2, of: 24 }
+          - { shard: 7, files: lib/atlas_pca/intent_v2.rb, slice: 3, of: 24 }
+          - { shard: 8, files: lib/atlas_pca/intent_v2.rb, slice: 4, of: 24 }
+          - { shard: 9, files: lib/atlas_pca/intent_v2.rb, slice: 5, of: 24 }
+          - { shard: 10, files: lib/atlas_pca/intent_v2.rb, slice: 6, of: 24 }
+          - { shard: 11, files: lib/atlas_pca/intent_v2.rb, slice: 7, of: 24 }
+          - { shard: 12, files: lib/atlas_pca/intent_v2.rb, slice: 8, of: 24 }
+          - { shard: 13, files: lib/atlas_pca/intent_v2.rb, slice: 9, of: 24 }
+          - { shard: 14, files: lib/atlas_pca/intent_v2.rb, slice: 10, of: 24 }
+          - { shard: 15, files: lib/atlas_pca/intent_v2.rb, slice: 11, of: 24 }
+          - { shard: 16, files: lib/atlas_pca/intent_v2.rb, slice: 12, of: 24 }
+          - { shard: 17, files: lib/atlas_pca/intent_v2.rb, slice: 13, of: 24 }
+          - { shard: 18, files: lib/atlas_pca/intent_v2.rb, slice: 14, of: 24 }
+          - { shard: 19, files: lib/atlas_pca/intent_v2.rb, slice: 15, of: 24 }
+          - { shard: 20, files: lib/atlas_pca/intent_v2.rb, slice: 16, of: 24 }
+          - { shard: 21, files: lib/atlas_pca/intent_v2.rb, slice: 17, of: 24 }
+          - { shard: 22, files: lib/atlas_pca/intent_v2.rb, slice: 18, of: 24 }
+          - { shard: 23, files: lib/atlas_pca/intent_v2.rb, slice: 19, of: 24 }
+          - { shard: 24, files: lib/atlas_pca/intent_v2.rb, slice: 20, of: 24 }
+          - { shard: 25, files: lib/atlas_pca/intent_v2.rb, slice: 21, of: 24 }
+          - { shard: 26, files: lib/atlas_pca/intent_v2.rb, slice: 22, of: 24 }
+          - { shard: 27, files: lib/atlas_pca/intent_v2.rb, slice: 23, of: 24 }
+          - { shard: 28, files: lib/atlas_pca/intent_v2.rb, slice: 24, of: 24 }
+          - { shard: 29, files: lib/atlas_pca/intent_wb.rb, slice: 1, of: 8 }
+          - { shard: 30, files: lib/atlas_pca/intent_wb.rb, slice: 2, of: 8 }
+          - { shard: 31, files: lib/atlas_pca/intent_wb.rb, slice: 3, of: 8 }
+          - { shard: 32, files: lib/atlas_pca/intent_wb.rb, slice: 4, of: 8 }
+          - { shard: 33, files: lib/atlas_pca/intent_wb.rb, slice: 5, of: 8 }
+          - { shard: 34, files: lib/atlas_pca/intent_wb.rb, slice: 6, of: 8 }
+          - { shard: 35, files: lib/atlas_pca/intent_wb.rb, slice: 7, of: 8 }
+          - { shard: 36, files: lib/atlas_pca/intent_wb.rb, slice: 8, of: 8 }
+          - { shard: 37, files: lib/atlas_pca/predicates.rb, slice: 1, of: 2 }
+          - { shard: 38, files: lib/atlas_pca/predicates.rb, slice: 2, of: 2 }
+          - { shard: 39, files: lib/atlas_pca/safe_regex.rb, slice: 1, of: 6 }
+          - { shard: 40, files: lib/atlas_pca/safe_regex.rb, slice: 2, of: 6 }
+          - { shard: 41, files: lib/atlas_pca/safe_regex.rb, slice: 3, of: 6 }
+          - { shard: 42, files: lib/atlas_pca/safe_regex.rb, slice: 4, of: 6 }
+          - { shard: 43, files: lib/atlas_pca/safe_regex.rb, slice: 5, of: 6 }
+          - { shard: 44, files: lib/atlas_pca/safe_regex.rb, slice: 6, of: 6 }
+          - { shard: 45, files: 'lib/atlas_pca/rack_middleware.rb lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb', slice: 1, of: 1 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every file of lib/ is in the plan
+        run: diff <(find lib -name '*.rb' | sort) <(tr ' ' '\n' <<<"$PLAN_FILES" | grep . | sort)
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - run: gem install --no-document parser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship tooling (+ libatlas_less)
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+        env:
+          LESS: '1'
+      - name: Reason snapshot from the unmutated source (this runner's backends)
+        working-directory: ${{ env.MONO }}/sdks/${{ env.CRATE }}
+        run: |
+          gzip -dc test-data/reasons.tsv.gz > "$RUNNER_TEMP/reasons-committed.tsv" 2>/dev/null || : > "$RUNNER_TEMP/reasons-committed.tsv"
+          ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz
+          n="$(gzip -dc test-data/reasons.tsv.gz | diff - "$RUNNER_TEMP/reasons-committed.tsv" | grep -c '^[<>]' || true)"
+          [ "$n" = 0 ] || echo "::warning::the committed test-data/reasons.tsv.gz differs from this runner's output in $n line(s): stale, or other backends. The oracle uses the runner's (regenerate: ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz)"
+      - name: Baseline results (targeted mode)
+        if: ${{ !inputs.full }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE: ${{ inputs.baseline_run }}
+        run: |
+          ids="$BASELINE"
+          if [ -z "$ids" ]; then
+            ids="$(gh run list -R "$GITHUB_REPOSITORY" --workflow mutation.yml --branch "$GITHUB_REF_NAME" --limit 20 \
+                     --json databaseId -q '.[].databaseId' | grep -vx "$GITHUB_RUN_ID" || true)"
+          fi
+          for id in $ids; do
+            rm -rf "$RUNNER_TEMP/base"
+            # every shard's results: a large file is sliced by mutant id, and ids move between slices when the source changes
+            if gh run download "$id" -R "$GITHUB_REPOSITORY" -p 'mut-results-*' -D "$RUNNER_TEMP/base" 2>/dev/null \
+               && [ -n "$(find "$RUNNER_TEMP/base" -name '*.src.rb' -print -quit)" ]; then
+              echo "BASE=$RUNNER_TEMP/base" >> "$GITHUB_ENV"
+              echo "targeted: seeded from run $id ($(find "$RUNNER_TEMP/base" -name '*.json' | wc -l) results file(s))"; exit 0
+            fi
+          done
+          echo "::notice::no baseline results found, full run (seeds the next run)"
+      - name: Mutate
+        working-directory: ${{ env.MONO }}/tools/pca-audit/ruby-mutate
+        env:
+          FILES: ${{ matrix.files }}
+          SLICE: ${{ matrix.slice }}
+          OF: ${{ matrix.of }}
+        run: |
+          # a mutant that allocates without bound must die alone (killed), not exhaust the runner
+          ulimit -v 6291456
+          : > "$RUNNER_TEMP/raws.tsv"
+          mkdir -p "$RUNNER_TEMP/mut-results"
+          n=0
+          for f in $FILES; do
+            n=$((n + 1)); F="../../../sdks/$CRATE/$f"; out="$RUNNER_TEMP/raw-$n.json"
+            slug="${f//\//__}"
+            # stderr shown (minus the parser gem's version banner): a failing listing must say why
+            ruby mutate.rb "$F" --list > "$RUNNER_TEMP/list.tsv" 2> >(grep -v 'warning: parser\|Please see\|is loading parser' >&2)
+            ids="$(awk -F'\t' -v k="$SLICE" -v m="$OF" '($1 % m) == (k - 1) { printf "%s%s", s, $1; s="," }' "$RUNNER_TEMP/list.tsv")"
+            echo "$f: $(wc -l < "$RUNNER_TEMP/list.tsv") mutants, $(tr ',' '\n' <<<"$ids" | grep -c .) in slice $SLICE/$OF"
+            [ -n "$ids" ] || { echo "::error::no mutants for $f"; exit 1; }
+            carry=()
+            if [ -n "${BASE:-}" ]; then
+              prevs="$(find "$BASE" -name "$slug.json" | sort | paste -sd, -)"
+              src="$(find "$BASE" -name "$slug.src.rb" | head -1)"
+              if [ -n "$prevs" ] && [ -n "$src" ]; then carry=(--carry "$prevs" --carry-src "$src")
+              else echo "::notice::$f: no baseline results, full run of the slice"; fi
+            fi
+            ruby mutate.rb "$F" --jobs 4 --timeout 300 --only "$ids" "${carry[@]}" > "$out" 2> >(grep -v 'warning: parser\|Please see\|is loading parser' >&2) || {
+              rc=$?
+              # show why: the oracle's own suites on the unmutated source
+              (cd "../../../sdks/$CRATE" && ruby conformance.rb 2>&1 | tail -15; ruby -Ilib test/run_kill.rb 2>&1 | tail -15)
+              exit "$rc"; }
+            printf '%s\t%s\n' "$f" "$out" >> "$RUNNER_TEMP/raws.tsv"
+            # the next run's baseline: this slice's results (carried ones included) + the source they were taken on
+            cp "$out" "$RUNNER_TEMP/mut-results/$slug.json"; cp "$F" "$RUNNER_TEMP/mut-results/$slug.src.rb"
+          done
+      - name: Report
+        run: |
+          node -e '
+            const fs = require("fs"); const counts = {}, surv = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8"))) {
+                counts[m.status] = (counts[m.status] || 0) + 1;
+                if (m.status === "SURVIVED") surv.push({ crate: "ruby-pca", file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, lineno: m.line, ...(m.fn ? { fn: m.fn } : {}) });
+              }
+            }
+            fs.writeFileSync("counts.json", JSON.stringify(counts)); fs.writeFileSync("survivors.json", JSON.stringify(surv));
+          ' "$RUNNER_TEMP/raws.tsv"
+          node .github/scripts/mutation-shard-report.mjs --crate="$CRATE" --shard=${{ matrix.shard }} --of="$SHARDS" --tool=ruby-mutate \
+            --counts=counts.json --survivors=survivors.json --out=shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mut-results-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mut-results/
+          retention-days: 30
+
+  merge:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship checker + ledger
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+          pattern: shard-*
+      - name: Merge shards and check the ledger
+        run: >
+          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports
+          --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: survivors-merged
+          path: reports/survivors-merged.json
+          if-no-files-found: ignore

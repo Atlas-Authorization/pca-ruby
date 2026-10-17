@@ -138,5 +138,48 @@ check(parsed['failed_checks'].is_a?(Array) && parsed['failed_checks'].include?('
       "wrong audience: failed_checks should list audience, got #{parsed['failed_checks'].inspect}")
 check(headers['WWW-Authenticate'].to_s.start_with?('PCA realm="pca"'), 'wrong audience: no challenge')
 
+# ---------------------------------------------------------------------------
+# 5. 0.4.2 audit: the challenge carries no request-derived text (the deny reason), only realm + code
+# ---------------------------------------------------------------------------
+check(headers['WWW-Authenticate'] == 'PCA realm="pca", error="access_denied"',
+      "wrong audience: challenge must not echo the reason, got #{headers['WWW-Authenticate'].inspect}")
+evil = AtlasPca::RackMiddleware.new(terminal_app[0], audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+_s, h, = evil.call(header_env('!'))
+check(!h['WWW-Authenticate'].include?('error_description'), 'undecodable: challenge must not carry a description')
+
+# ---------------------------------------------------------------------------
+# 6. 0.4.2 audit: a non-String grant_ref is a 401 'malformed PCActn' and never reaches resolve_grant
+# ---------------------------------------------------------------------------
+[nil, ['g'], { 'id' => 'g' }, 7, true].each do |bad|
+  seen_refs = []
+  app, seen = terminal_app
+  mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: ->(r) { seen_refs << r; GRANT }, now: NOW)
+  status, headers, body = mw.call(header_env(AtlasPca.b64e(AtlasPca.canon_bytes(PCACTN.merge('grant_ref' => bad)))))
+  check(status == 401, "grant_ref #{bad.inspect}: status=#{status} want 401")
+  check(seen_refs.empty? && seen[:ran].nil?, "grant_ref #{bad.inspect}: resolver/app must not run")
+  check(body_json(status, headers, body)['error'] == 'invalid_pcactn', "grant_ref #{bad.inspect}: error code")
+  check(body_json(status, headers, body)['error_description'] == 'malformed PCActn', "grant_ref #{bad.inspect}: description")
+end
+missing = PCACTN.reject { |k, _| k == 'grant_ref' }
+status, = AtlasPca::RackMiddleware.new(terminal_app[0], audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+                                  .call(header_env(AtlasPca.b64e(AtlasPca.canon_bytes(missing))))
+check(status == 401, "missing grant_ref: status=#{status} want 401")
+
+# ---------------------------------------------------------------------------
+# 7. 0.4.2 audit: a raising resolver fails closed (403), never escapes as a 500
+# ---------------------------------------------------------------------------
+app, seen = terminal_app
+boom = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: ->(_r) { raise TypeError, 'db down' }, now: NOW)
+status, headers, body =
+  begin
+    boom.call(header_env(B64_PCACTN))
+  rescue StandardError => e
+    [500, {}, [e.class.name]]
+  end
+check(status == 403, "raising resolver: status=#{status} want 403")
+check(seen[:ran].nil?, 'raising resolver: downstream app should NOT have run')
+check(status == 403 && body_json(status, headers, body)['error_description'] == 'grant resolution failed (fail closed)',
+      'raising resolver: description')
+
 puts "#{$count} assertions, #{$fails} failures (vector: #{VECTOR['name']})"
 exit($fails.zero? ? 0 : 1)

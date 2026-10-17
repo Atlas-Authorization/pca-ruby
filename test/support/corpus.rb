@@ -39,10 +39,22 @@ module Corpus
     end.join
   end
 
+  # Intent Layer M2: `intent_policy_json` (raw JSON TEXT, parsed with the platform parser) wins over `intent_policy`.
+  def intent_policy(ctx)
+    ctx.key?('intent_policy_json') ? AtlasPca.parse_intent_policy_json(ctx['intent_policy_json']) : ctx['intent_policy']
+  end
+
+  # Intent Layer v2: `intent_v2` (the verifier state of a v2 vector or fuzz input; a JSON object, or its JSON text).
+  def intent_v2(ctx)
+    v = ctx['intent_v2']
+    v.is_a?(String) ? JSON.parse(v) : v
+  end
+
   def verify_one(v)
     ctx = v['context']
     input = v.key?('pcactn_json') ? v['pcactn_json'] : v['pcactn']
-    AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'])
+    AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'],
+                                              intent_policy: intent_policy(ctx), intent_v2: intent_v2(ctx))
   end
 
   def parse_outcome(input, **opt)
@@ -128,7 +140,8 @@ module Corpus
     out
   end
 
-  SUPPORTED = %w[ed25519 ml-dsa-65 hybrid-ed25519-ml-dsa-65].freeze
+  # the runtime capability manifest, read once from the unmutated library at load (conformance.rb's SUPPORTED_SIG_SUITES)
+  SUPPORTED = AtlasPca.supported_suites.freeze
 
   def nest(levels, leaf)
     v = leaf
@@ -207,6 +220,21 @@ module Corpus
         end
       end
     end
+    v2_prim_checks(p, chk)
+    # Intent Layer v2 `requires_suite` vectors whose suite this runtime does not implement (not in supported_suites: absent
+    # from the dispatch, or its backend unavailable here): a deny, with `unsupported_suite` in the reason when a v2 check
+    # fails first (implemented ones are compared as usual).
+    v2 = %w[schema intent_session layers accumulators map facts provenance classes]
+    (doc['vectors'] || []).each do |v|
+      rs = v['requires_suite']
+      next unless rs.is_a?(String) && !SUPPORTED.include?(rs)
+
+      chk.call("v2suite:#{v['name']}") do
+        g = verify_one(v)
+        first = g.checks.find { |_, ok| !ok }&.first
+        g.allow == false && (!v2.include?(first) || g.reason.to_s.include?('unsupported_suite'))
+      end
+    end
     (p['depth'] || []).each do |d|
       chk.call("dp:#{d['name']}") do
         inp = expand(d['input'], d['expand'])
@@ -228,6 +256,55 @@ module Corpus
     bad
   end
 
+  # The Intent Layer v2 primitive tables (as conformance.rb compares them; reasons never compared). A table absent from the
+  # corpus, or a function this build lacks, contributes nothing.
+  def v2_prim_checks(p, chk)
+    run = lambda do |name, fn, &blk|
+      rows = p[name]
+      next unless rows.is_a?(Array) && AtlasPca.respond_to?(fn)
+
+      # `input_json` (raw text; a bare -0 stays negative zero) takes precedence over `input` (README "Raw JSON text members").
+      rows.each do |e|
+        chk.call("#{name}:#{e['name']}") do
+          blk.call(e.key?('input_json') ? AtlasPca.parse_json_text(e['input_json']) : e['input'], e['expect'])
+        end
+      end
+    end
+    run.call('intent_schema', :verify_action_schema) do |i, x|
+      c = AtlasPca.conform_action(i['schema'], i['verb'], i['params'])
+      AtlasPca.verify_action_schema(i['schema'], i['keys'])['ok'] == x['sig'] &&
+        (!x.key?('digest') || AtlasPca.action_schema_digest(i['schema']) == x['digest']) &&
+        c['ok'] == x['conform']['ok'] && c['code'] == x['conform']['code'] && c['path'] == x['conform']['path']
+    end
+    run.call('intent_revocation', :intent_revocation_primitive) { |i, x| AtlasPca.intent_revocation_primitive(i)['ok'] == x['ok'] }
+    run.call('intent_world', :decide_intent_world) do |i, x|
+      g = AtlasPca.decide_intent_world(i)
+      g['ok'] == x['ok'] && (!x['ok'] || (g['world'] == x['world'] && g['single_source'] == x['single_source']))
+    end
+    run.call('intent_provenance', :decide_param_provenance) do |i, x|
+      g = AtlasPca.decide_param_provenance(i)
+      g['outcome'] == x['outcome'] && (x['outcome'] == 'deny' || (g['labels'] == x['labels'] && g['classes'] == x['classes'])) &&
+        (x['outcome'] != 'question' || g['friction'] == x['friction'])
+    end
+    run.call('intent_classifier', :decide_classifier_dimensions) do |i, x|
+      g = AtlasPca.decide_classifier_dimensions(i)
+      g['ok'] == x['ok'] && (!x['ok'] || g['classes'] == x['classes'])
+    end
+    run.call('intent_wb_active', :intent_wb_active) do |i, x|
+      g = AtlasPca.intent_wb_active(i)
+      %w[facts provenance classes].all? { |k| g[k] == x[k] }
+    end
+    run.call('intent_map_commit', :map_commit_of_leaves) { |i, x| AtlasPca.map_commit_of_leaves(i['leaves']) == x['map_commit'] }
+    run.call('intent_map', :intent_map_primitive) do |i, x|
+      g = AtlasPca.intent_map_primitive(i)
+      g['ok'] == x['ok'] && (!x['ok'] || (g['cell'] == x['cell'] && g['p_ppm'] == x['p_ppm']))
+    end
+    run.call('intent_read_purpose', :decide_read_purpose) do |i, x|
+      g = AtlasPca.decide_read_purpose(i)
+      %w[outcome minimise uncovered].all? { |k| g[k] == x[k] }
+    end
+  end
+
   INPUTS = File.expand_path('../../../../tools/pca-audit/native-mutation/inputs.jsonl.gz', __dir__)
 
   def inputs
@@ -244,7 +321,8 @@ module Corpus
       val = if c['kind'] == 'verify'
               begin
                 grant = AtlasPca.parse_json(c['grant'], loose: true)
-                g = AtlasPca.verify_pcactn(raw, grant, now: c['now'], audience: c['aud'], allowed_suites: c['allowed_suites'])
+                g = AtlasPca.verify_pcactn(raw, grant, now: c['now'], audience: c['aud'], allowed_suites: c['allowed_suites'],
+                                                     intent_policy: intent_policy(c), intent_v2: intent_v2(c))
                 "#{g.allow}|#{g.checks.map { |ck, cv| "#{ck}=#{cv}" }.join(',')}|#{esc(g.reason)}"
               rescue StandardError, SystemStackError => e
                 "THROW:#{e.class}:#{esc(e.message)}"

@@ -9,7 +9,13 @@ require_relative 'support/corpus'
 Dir[File.join(__dir__, 'kill', '*.rb')].sort.each { |f| load f }
 
 fails = 0
-MutationKill::TESTS.each do |name, fn|
+skipped = Hash.new(0)
+supported = AtlasPca.supported_suites
+MutationKill::TESTS.each do |name, fn, needs|
+  if needs && !supported.include?(needs)
+    skipped[needs] += 1
+    next
+  end
   ok = begin
     fn.call
   rescue Exception => e # rubocop:disable Lint/RescueException
@@ -21,5 +27,6 @@ MutationKill::TESTS.each do |name, fn|
   fails += 1
   warn "FAIL: #{name}"
 end
-puts "kill tests: #{MutationKill::TESTS.length}, failures: #{fails}"
+puts "kill tests: #{MutationKill::TESTS.length}, failures: #{fails}" +
+     (skipped.empty? ? '' : "; skipped (suite not in this runtime): #{skipped.map { |s, n| "#{s} #{n}" }.join(', ')}")
 exit(fails.zero? ? 0 : 1)

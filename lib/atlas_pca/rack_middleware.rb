@@ -30,26 +30,39 @@ module AtlasPca
   #                   against the PCActn's signed `aud` by the verifier.
   #   resolve_grant:  (required) a callable grant_ref -> grant Hash | nil. nil means "unknown
   #                   grant" and yields 401. The grant is the root capability the chain must
-  #                   be rooted at.
+  #                   be rooted at. It is only called with a String grant_ref (anything else is a
+  #                   401 'malformed PCActn'); if it raises, the request fails closed with a 403.
   #   now:            (optional) current time in epoch milliseconds, or a callable returning it.
   #                   Defaults to wall-clock. Used for the validity-window check.
   #   header:         (optional) the Rack env key carrying the base64url PCActn. Defaults to
   #                   'HTTP_PCA_ACTION' (the `PCA-Action` request header).
+  #   intent_policy:  (optional) Intent Layer M2 policy Hash { require:, min_fidelity_ppm:, max_residual_risk_ppm: }
+  #                   forwarded to AtlasPca.verify_pcactn (an active policy denies a PCActn without a bound intent).
+  #   intent_v2:      (optional) Intent Layer v2 verifier state + policy (String keys: policy, params, schema, session,
+  #                   layers, acc, wb; see AtlasPca.decide_intent_v2): a Hash, or a callable (pcactn) -> Hash | nil
+  #                   evaluated per request (the host's store lookup: session root, held grants, accumulator pre-state
+  #                   under its row lock, receipts, plaintext params). A callable that raises fails closed: 403
+  #                   `intent_v2_context_error`, and the verifier is not run.
   class RackMiddleware
     REALM = 'pca'
     DEFAULT_HEADER = 'HTTP_PCA_ACTION'
 
     class DecodeError < StandardError; end
 
-    def initialize(app, audience:, resolve_grant:, now: nil, header: DEFAULT_HEADER)
+    def initialize(app, audience:, resolve_grant:, now: nil, header: DEFAULT_HEADER, intent_policy: nil, intent_v2: nil)
       raise ArgumentError, 'audience: is required' if audience.nil? || audience.to_s.empty?
       raise ArgumentError, 'resolve_grant: must respond to #call' unless resolve_grant.respond_to?(:call)
+      unless intent_v2.nil? || intent_v2.is_a?(Hash) || intent_v2.respond_to?(:call)
+        raise ArgumentError, 'intent_v2: must be a Hash or respond to #call'
+      end
 
       @app = app
       @audience = audience
       @resolve_grant = resolve_grant
       @now = now
       @header = header
+      @intent_policy = intent_policy
+      @intent_v2 = intent_v2
     end
 
     def call(env)
@@ -61,10 +74,31 @@ module AtlasPca
         end
       return unauthorized('no PCActn presented') if pcactn.nil?
 
-      grant = @resolve_grant.call(pcactn['grant_ref'])
+      # Mirrors TS requirePCA: a grant_ref that is not a String (absent, nil, Array, Hash, Integer) is a malformed PCActn
+      # (401 invalid_pcactn) and never reaches the host's resolver.
+      grant_ref = pcactn['grant_ref']
+      return unauthorized('malformed PCActn') unless grant_ref.is_a?(String)
+
+      grant =
+        begin
+          @resolve_grant.call(grant_ref)
+        rescue StandardError
+          # the host's resolver failed: fail closed (TS: 403 guard error), never a 500
+          return json_response(403, 'access_denied', 'grant resolution failed (fail closed)')
+        end
       return unauthorized('unknown grant') if grant.nil?
 
-      verdict = AtlasPca.verify_pcactn(pcactn, grant, now: current_now, audience: @audience)
+      v2 = @intent_v2
+      if !v2.is_a?(Hash) && v2.respond_to?(:call)
+        begin
+          v2 = v2.call(pcactn)
+        rescue StandardError
+          # the host's state lookup failed: fail closed, never verify without it
+          return json_response(403, 'intent_v2_context_error', 'intent v2 verifier state unavailable (fail closed)')
+        end
+      end
+      verdict = AtlasPca.verify_pcactn(pcactn, grant, now: current_now, audience: @audience,
+                                                           intent_policy: @intent_policy, intent_v2: v2)
       return forbidden(verdict) unless verdict.allow
 
       env['pca'] = { 'verdict' => verdict, 'pcactn' => pcactn }
@@ -151,16 +185,17 @@ module AtlasPca
     def json_response(status, error, description, extra = {})
       payload = { 'error' => error, 'error_description' => description }.merge(extra)
       headers = {
-        'WWW-Authenticate' => www_authenticate(error, description),
+        'WWW-Authenticate' => www_authenticate(error),
         'content-type' => 'application/json'
       }
       [status, headers, [to_json(payload)]]
     end
 
-    def www_authenticate(error, description)
-      # Keep the challenge RFC 7235-clean: strip quotes/backslashes from the free-text bits.
-      safe = description.to_s.tr('"\\', ' ')
-      %(PCA realm="#{REALM}", error="#{error}", error_description="#{safe}")
+    # Only the realm and the static error code. The description is NOT emitted: it can carry request-derived text (the
+    # verdict reason, a JSON parse error) with CR/LF (header injection); TS requirePCA puts no reason in its challenge
+    # either. The description stays in the JSON body.
+    def www_authenticate(error)
+      %(PCA realm="#{REALM}", error="#{error}")
     end
 
     # Small, dependency-free JSON emitter for the flat error payloads above

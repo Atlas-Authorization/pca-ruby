@@ -26,7 +26,7 @@ module MutationKill
       T.sf(AtlasPca.verify_threshold_share(e.merge('share' => e['share'].merge('pq_pk' => nil)))) &&
       T.sf(AtlasPca.verify_threshold_share(e.merge('share' => e['share'].merge('sig' => AtlasPca.b64e("\x01".b * 64)))))
   end
-  t('verify_threshold_share: a hybrid share needs BOTH halves') do
+  t('verify_threshold_share: a hybrid share needs BOTH halves', needs: 'ml-dsa-65') do
     h = T.valid_hybrid
     h.nil? || (AtlasPca.verify_threshold_share(h) == true &&
       T.sf(AtlasPca.verify_threshold_share(h.merge('share' => h['share'].merge('sig' => AtlasPca.b64e("\x01".b * 64))))))
@@ -44,7 +44,7 @@ module MutationKill
   t('signer_set_hash: a non-String role or key is nil, not a raise') do
     AtlasPca.signer_set_hash([{ 'role' => 5, 'publicKey' => 'K' }]).nil? && AtlasPca.signer_set_hash([{ 'role' => 'agent', 'publicKey' => 5 }]).nil?
   end
-  t('verify_pq_artifact: strictly false on a bad entry, message or key') do
+  t('verify_pq_artifact: strictly false on a bad entry, message or key', needs: 'ml-dsa-65') do
     a = Corpus.core['primitives']['pq_artifact'].find { |x| x['alg'] == 'hybrid-ed25519-ml-dsa-65' && x['valid'] != false }
     AtlasPca.verify_pq_artifact(a) == true &&
       [5, nil, 'x', {}, a.merge('message' => 'AA'), a.merge('message' => 5), a.merge('ed_pub' => 'AA'), a.merge('ed_pub' => 5),

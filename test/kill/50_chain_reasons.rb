@@ -33,7 +33,21 @@ module MutationKill
       K.vc([r], K.iss, true, []) == ["hop 0: signature suite 'ed25519' is not allowed by this verifier's suite policy", false] &&
       K.vc([r], K.iss, true, ['ed25519']) == ['', true]
   end
-  t('verify_chain: two-hop reasons') do
+  t('verify_chain: stored grant AND a pin must agree (0.4.2, fail closed)') do
+    v = K.pin('chainpin-pure-pq-root-trusted-root')
+    wrong = K.pin('chainpin-hybrid-root-wrong-pin')['pq_pins']
+    right = K.pin('chainpin-pure-pq-root-pinned')['pq_pins']
+    eri = v['expected_root_issuer']
+    want = ["hop 0: root suite 'ml-dsa-65': the server-side PQ pin for the root issuer (policy.pqPins) does not match the stored grant's pq_pk (fail closed)", false]
+    refused = K.vc(v['chain'], eri, true, nil, wrong, v['trusted_root']) == want &&
+              K.vc(v['chain'], eri, true, nil, { eri => 'not-the-key' }, v['trusted_root']) == want
+    # agreeing pin / pin for another issuer: the stored grant still authorises (needs a runtime that verifies ML-DSA-65)
+    agree = !AtlasPca.supported_suites.include?('ml-dsa-65') ||
+            (K.vc(v['chain'], eri, true, nil, right, v['trusted_root']) == ['', true] &&
+             K.vc(v['chain'], eri, true, nil, { 'someone-else' => 'k' }, v['trusted_root']) == ['', true])
+    refused && agree
+  end
+  t('verify_chain: two-hop reasons', needs: 'ml-dsa-65') do
     v = K.pin('chainpin-mixed-ed25519-root-bound-pq-hop')
     r, h = v['chain']
     ok = K.vc(v['chain'], v['expected_root_issuer'])
@@ -74,7 +88,7 @@ module MutationKill
       b.call('hybrid-ed25519-ml-dsa-65', 'P', c, 'L').nil? && b.call('hybrid-ed25519-ml-dsa-65', 5, c, 'L') ==
         "L: pq_pk does not match the signer's committed holder_pq (F-2)"
   end
-  t('signable_hop_body exact') do
+  t('signable_hop_body exact', needs: 'ml-dsa-65') do
     s = ->(c) { AtlasPca.signable_hop_body(c) }
     base = { 'issuer' => 'I', 'holder' => 'H', 'caveats' => [], 'parent' => 'P' }
     body = base.dup

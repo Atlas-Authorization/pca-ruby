@@ -218,7 +218,7 @@ module MutationKill
       !AtlasPca.utf8_string?(:a) && !AtlasPca.utf8_string?(nil)
   end
 
-  t('r041 share wire: validate_share_signature_wire per suite, pq_pk echo not judged; leaf still judges pq_pk') do
+  t('r041 share wire: validate_share_signature_wire per suite, pq_pk echo not judged; leaf still judges pq_pk', needs: 'ml-dsa-65') do
     ed = { 'sig' => AtlasPca.b64e("\x01".b * 64) }
     ml = { 'alg' => 'ml-dsa-65', 'sig' => AtlasPca.b64e("\x01".b * 3309) }
     pk = AtlasPca.b64e("\x02".b * 1952)

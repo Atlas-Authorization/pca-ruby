@@ -60,7 +60,7 @@ module MutationKill
     [[pk[0, 10], sg], [pk, sg[0, 10]], [nil, sg], [pk, nil], [5, 5]].all? { |a, b| C.sf(m.mldsa65_verify(a, 'm', b)) } &&
       [[m.b64e(pk), 'AA'], ['AA', m.b64e(sg)], [nil, nil], [5, m.b64e(sg)]].all? { |a, b| C.sf(m.mldsa65_verify_b64u(a, 'm', b)) }
   end
-  t('resolve_suite exact results') do
+  t('resolve_suite exact results', needs: 'ml-dsa-65') do
     r = ->(p) { AtlasPca.resolve_suite(p) }
     r.call({}) == ['ed25519', nil] && r.call({ 'alg' => 'ml-dsa-65' }) == ['ml-dsa-65', nil] &&
       r.call({ 'alg' => 5 }) == [nil, "'alg' must be a string"] && r.call({ 'alg' => nil }) == [nil, "'alg' must be a string"] &&

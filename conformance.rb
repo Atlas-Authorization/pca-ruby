@@ -4,6 +4,7 @@
 # Plain conformance runner (wire format v2 + v2.1 agent-leaf share binding + PQ crypto-agility).
 # Run: ruby sdks/ruby-pca/conformance.rb   (exit 1 on any failure)
 require_relative 'lib/atlas_pca'
+require 'json'
 
 DIR = File.expand_path('conformance', __dir__)
 # loose: the vectors file carries deliberately-bad values (lone surrogates, floats, 40-deep nesting) as
@@ -22,15 +23,11 @@ end
 
 abort 'not a format-2 file' unless doc['format'] == 2 && doc['ver'] == 2
 
-# The SIGNATURE SUITES this Ruby verifier implements, via OpenSSL (Ed25519 raw + ML-DSA-65 raw, >= 3.5).
-# These are the THREE cross-impl suites every conformant PCA implementation must agree on (GAP 1): classical
-# Ed25519, pure lattice ML-DSA-65 (FIPS-204), and the hybrid Ed25519+ML-DSA-65. The remaining 7 registered
-# suites (ml-dsa-87, slh-dsa-sha2-128f/256s, their Ed25519 hybrids, and the SUF-CMA nested hybrid) are NOT
-# wired here, so any vector/primitive whose verdict needs a GENUINE signature outcome under one of them is
-# skipped explicitly with a count — never silently passed. A terminal {wire:false} negative is suite-agnostic
-# (an unknown/oversized `alg`/`pq_*` is rejected at the wire stage, which IS the correct contract verdict), so
-# those still run and must pass.
-SUPPORTED_SIG_SUITES = %w[ed25519 ml-dsa-65 hybrid-ed25519-ml-dsa-65].freeze
+# The SIGNATURE SUITES this Ruby verifier implements in this runtime: its capability manifest (AtlasPca.supported_suites,
+# OpenSSL >= 3.5: Ed25519 + ML-DSA-65/87 + SLH-DSA-SHA2-128f/256s and their hybrids; packages/pca/conformance/SUITES.md).
+# A vector whose verdict needs a suite outside it is NOT skipped silently: the verifier must deny it with the distinct
+# reason unsupported_suite (asserted below, counted). A terminal {wire:false} negative is suite-agnostic and still runs.
+SUPPORTED_SIG_SUITES = AtlasPca.supported_suites.freeze
 
 # The concrete signature suite a vector exercises that this verifier does NOT implement, or nil.
 # For requires:"pq" that is the LEAF `alg`; for requires:"pq-nonleaf" the first capability-hop `alg` outside
@@ -84,12 +81,36 @@ $skipped = 0
 $ran = 0
 per_suite_ran = Hash.new(0)
 per_suite_skipped = Hash.new(0)
+$v2_unsupported = 0
+V2_CHECKS = %w[schema intent_session layers accumulators map facts provenance classes].freeze
 vs.each do |v|
   bucket = v['requires'] || 'core'
   suite = unsupported_suite(v)
+  # Intent Layer v2: `requires_suite` names the signature suite a vector needs. Implemented here (the dispatch's
+  # supported_suites: in the dispatch AND its backend available in this runtime): compared exactly below. Otherwise the
+  # verifier must deny, and when the first failing check is a v2 check its reason must contain `unsupported_suite` (a core
+  # check failing first only needs the deny).
+  rs = v['requires_suite']
+  if rs.is_a?(String) && !AtlasPca.supported_suites.include?(rs)
+    ctx = v['context']
+    got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], intent_v2: ctx['intent_v2'])
+    first = got.checks.find { |_, ok| !ok }&.first
+    # a vector that names its refusal (reason_contains: e.g. the session-root pin checks) reaches it before the suite work
+    rc = v['expect']['reason_contains']
+    ok = got.allow == false && (rc.is_a?(String) ? got.reason.to_s.include?(rc) : (!V2_CHECKS.include?(first) || got.reason.to_s.include?('unsupported_suite')))
+    check(ok, "#{v['name']}: suite #{rs} is not implemented here: want a deny (unsupported_suite when a v2 check fails first), got allow=#{got.allow} (#{got.reason})")
+    $v2_unsupported += 1
+    next
+  end
   if suite && !terminal_wire_false?(v['expect'])
     $skipped += 1
     per_suite_skipped["#{bucket} | #{suite}"] += 1
+    if v['pcactn'].is_a?(Hash)
+      ctx = v['context']
+      got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'])
+      check(got.allow == false && got.reason.to_s.include?(AtlasPca::UNSUPPORTED_SUITE),
+            "#{v['name']}: suite #{suite} is not supported here: want a deny with unsupported_suite, got allow=#{got.allow} (#{got.reason})")
+    end
     next
   end
   $ran += 1
@@ -97,9 +118,19 @@ vs.each do |v|
 
   ctx = v['context']
   input = v.key?('pcactn_json') ? v['pcactn_json'] : v['pcactn']
-  got = AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'])
+  # Intent Layer M2: an `intent-*` vector may carry `context.intent_policy`; `expect.checks.intent` is present exactly
+  # when the check was evaluated (the check-set comparison below covers it).
+  # `context.intent_policy_json` (raw JSON TEXT, parsed with the platform parser) wins over `context.intent_policy`.
+  ipol = ctx.key?('intent_policy_json') ? AtlasPca.parse_intent_policy_json(ctx['intent_policy_json']) : ctx['intent_policy']
+  # Intent Layer v2: `context.intent_v2` is the verifier state (policy, params, schema, session, layers, acc, wb); the v2
+  # checks appear in `expect.checks` exactly when reported (the check-set comparison below covers them).
+  got = AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'],
+                                                  intent_policy: ipol, intent_v2: ctx['intent_v2'])
   exp = v['expect']
   check(got.allow == exp['allow'], "#{v['name']}: allow=#{got.allow} want #{exp['allow']} (#{got.reason})")
+  if exp['reason_contains'].is_a?(String)
+    check(got.reason.to_s.include?(exp['reason_contains']), "#{v['name']}: reason #{got.reason.inspect} lacks #{exp['reason_contains']}")
+  end
   check(got.checks.keys.sort == exp['checks'].keys.sort, "#{v['name']}: check set #{got.checks.keys} want #{exp['checks'].keys}")
   exp['checks'].each do |k, w|
     check(got.checks[k] == w, "#{v['name']}: check #{k}=#{got.checks[k]} want #{w}")
@@ -116,10 +147,17 @@ $share_accept = 0
 $share_reject = 0
 $bare_rejected = false
 $wrong_set_rejected = false
+$share_unsupported = 0
 shares.each do |s|
   name = s['name'] || s['role']
   want = s.key?('valid') ? s['valid'] : true
   got = AtlasPca.verify_threshold_share(s)
+  # Suite capability: an entry whose `requires` suite this runtime lacks is not compared; it must be refused (fail closed).
+  if s['requires'].is_a?(String) && !SUPPORTED_SIG_SUITES.include?(s['requires'])
+    $share_unsupported += 1
+    check(got == false, "threshold_share #{name}: share under unsupported suite #{s['requires']} verified (want fail closed)")
+    next
+  end
   check(got == want, "threshold_share #{name}: verified=#{got} want valid=#{want}")
   want ? ($share_accept += 1) : ($share_reject += 1)
   $bare_rejected = true if name == 'agent-bare-rejected' && got == false
@@ -191,7 +229,9 @@ check(AtlasPca.params_digest(nil) == prim['params_digest_empty'], 'empty params 
 
 # ------------------------------------------------- standalone chain API: root PQ authority (R4-01)
 # primitives.chain_pin[]: verify_chain(chain, expected_root_issuer, ..., pq_pins, trusted_root). A non-ed25519 ROOT needs a
-# verifier-side pin or the stored grant. ML-DSA-65 is in OpenSSL >= 3.5 (required by this runner), so every vector runs.
+# verifier-side pin or the stored grant. Suite capability: an entry whose `requires` suite this runtime's OpenSSL lacks is
+# compared only on its pin refusal (decided on the registered suite, before any crypto); otherwise it must be refused, with
+# unsupported_suite when the reference accepts it, and is counted as skipped.
 chain_pins = prim['chain_pin'] || []
 abort 'no chain_pin primitives' if chain_pins.length < 25
 $cp_ran = 0
@@ -199,8 +239,14 @@ $cp_skipped = 0
 chain_pins.each do |v|
   reason = v['expect']['reason'].to_s
   pin_refusal = reason.start_with?('hop 0: root suite')
-  $cp_ran += 1
   rs, ok = AtlasPca.verify_chain(v['chain'], v['expected_root_issuer'], !v['expected_root_issuer'].nil?, v['allowed_suites'], v['pq_pins'], v['trusted_root'])
+  if v['requires'].is_a?(String) && !SUPPORTED_SIG_SUITES.include?(v['requires']) && !pin_refusal
+    $cp_skipped += 1
+    check(ok == false, "#{v['name']}: accepted under unsupported suite #{v['requires']} (want fail closed)")
+    check(rs.to_s.include?(AtlasPca::UNSUPPORTED_SUITE), "#{v['name']}: want an unsupported_suite refusal (#{rs})") if v['expect']['ok']
+    next
+  end
+  $cp_ran += 1
   check(ok == v['expect']['ok'], "#{v['name']}: ok=#{ok} want #{v['expect']['ok']} (#{rs})")
   check(rs == reason, "#{v['name']}: reason #{rs.inspect} want #{reason.inspect}") if pin_refusal
 end
@@ -341,6 +387,95 @@ pca_header.each do |c|
   $ph_pass += 1 if ok
 end
 
+# ------------------------------------------------- Intent Layer v2 primitives (rules 13, 14, 16, 17, 18)
+# Function-level tables; reasons are never compared. A table absent from vectors.json (or a function this build lacks) is
+# skipped with a count. intent_schema: {sig, digest?, conform {ok, code?, path?}}; intent_revocation: {ok};
+# intent_world: ok (+ world, single_source when true); intent_provenance: outcome (+ labels, classes unless deny,
+# friction for question); intent_classifier: ok (+ classes when true); intent_wb_active: facts, provenance, classes;
+# intent_read_purpose: outcome, minimise, uncovered exactly; intent_map_commit: map_commit; intent_map (rule 19): ok and,
+# when ok, cell and p_ppm.
+$v2_prim = Hash.new(0)
+$v2_prim_skipped = Hash.new(0)
+$v2_prim_unsupported = Hash.new(0)
+v2_refused = lambda do |refused, ref_accepts, reason|
+  refused && (!ref_accepts || reason.to_s.include?(AtlasPca::UNSUPPORTED_SUITE))
+end
+V2_SUITE_REFUSAL = {
+  'intent_world' => ->(i, x) { g = AtlasPca.decide_intent_world(i); v2_refused.call(!g['ok'], x['ok'], g['reason']) },
+  'intent_provenance' => lambda { |i, x|
+    g = AtlasPca.decide_param_provenance(i)
+    v2_refused.call(g['outcome'] == 'deny', x['outcome'] != 'deny', g['reason'])
+  },
+  'intent_classifier' => ->(i, x) { g = AtlasPca.decide_classifier_dimensions(i); v2_refused.call(!g['ok'], x['ok'], g['reason']) }
+}.freeze
+v2_table = lambda do |name, fn, &blk|
+  rows = prim[name]
+  unless rows.is_a?(Array)
+    $v2_prim_skipped[name] += 1
+    next
+  end
+  unless AtlasPca.respond_to?(fn)
+    $v2_prim_skipped[name] += rows.length
+    next
+  end
+  rows.each do |e|
+    ok = begin
+      # README "Raw JSON text members": `input_json` (raw text, parsed with the platform parser; a bare -0 stays negative
+      # zero) takes precedence over `input`.
+      inp = e.key?('input_json') ? AtlasPca.parse_json_text(e['input_json']) : e['input']
+      rs = e['requires_suite']
+      if rs.is_a?(String) && !SUPPORTED_SIG_SUITES.include?(rs) && V2_SUITE_REFUSAL.key?(name)
+        # Suite capability: not compared; refused, with unsupported_suite when the reference accepts it.
+        $v2_prim_unsupported[name] += 1
+        V2_SUITE_REFUSAL[name].call(inp, e['expect'])
+      else
+        blk.call(inp, e['expect'])
+      end
+    rescue Exception => ex # rubocop:disable Lint/RescueException
+      warn "  #{name} #{e['name']} raised #{ex.class}: #{ex.message[0, 120]}"
+      false
+    end
+    check(ok, "#{name} #{e['name']}")
+    $v2_prim[name] += 1
+  end
+end
+v2_table.call('intent_schema', :verify_action_schema) do |i, x|
+  sig = AtlasPca.verify_action_schema(i['schema'], i['keys'])['ok']
+  c = AtlasPca.conform_action(i['schema'], i['verb'], i['params'])
+  want_c = x['conform']
+  sig == x['sig'] && (!x.key?('digest') || AtlasPca.action_schema_digest(i['schema']) == x['digest']) &&
+    c['ok'] == want_c['ok'] && c['code'] == want_c['code'] && c['path'] == want_c['path']
+end
+v2_table.call('intent_revocation', :intent_revocation_primitive) { |i, x| AtlasPca.intent_revocation_primitive(i)['ok'] == x['ok'] }
+v2_table.call('intent_world', :decide_intent_world) do |i, x|
+  g = AtlasPca.decide_intent_world(i)
+  g['ok'] == x['ok'] && (!x['ok'] || (g['world'] == x['world'] && g['single_source'] == x['single_source']))
+end
+v2_table.call('intent_provenance', :decide_param_provenance) do |i, x|
+  g = AtlasPca.decide_param_provenance(i)
+  g['outcome'] == x['outcome'] && (x['outcome'] == 'deny' || (g['labels'] == x['labels'] && g['classes'] == x['classes'])) &&
+    (x['outcome'] != 'question' || g['friction'] == x['friction'])
+end
+v2_table.call('intent_classifier', :decide_classifier_dimensions) do |i, x|
+  g = AtlasPca.decide_classifier_dimensions(i)
+  g['ok'] == x['ok'] && (!x['ok'] || g['classes'] == x['classes'])
+end
+v2_table.call('intent_wb_active', :intent_wb_active) do |i, x|
+  g = AtlasPca.intent_wb_active(i)
+  %w[facts provenance classes].all? { |k| g[k] == x[k] }
+end
+v2_table.call('intent_map_commit', :map_commit_of_leaves) do |i, x|
+  AtlasPca.map_commit_of_leaves(i['leaves']) == x['map_commit']
+end
+v2_table.call('intent_map', :intent_map_primitive) do |i, x|
+  g = AtlasPca.intent_map_primitive(i)
+  g['ok'] == x['ok'] && (!x['ok'] || (g['cell'] == x['cell'] && g['p_ppm'] == x['p_ppm']))
+end
+v2_table.call('intent_read_purpose', :decide_read_purpose) do |i, x|
+  g = AtlasPca.decide_read_purpose(i)
+  %w[outcome minimise uncovered].all? { |k| g[k] == x[k] }
+end
+
 # -------------------------------------------------------------------- report
 puts '=== PCA Ruby conformance (wire v2 / v2.1) ==='
 puts "threshold_set: #{$ts_ran} ran, #{$ts_skipped} skipped; signer_set_hash: #{(prim['signer_set_hash'] || []).length}; malformed: #{malformed.length}; depth: #{depth_cases.length}"
@@ -354,6 +489,8 @@ unless per_suite_skipped.empty?
   per_suite_skipped.sort.each { |k, n| puts "    #{k}: #{n}" }
 end
 puts "chain_pin: #{$cp_ran} ran, #{$cp_skipped} skipped of #{chain_pins.length}"
+puts "threshold_share: #{$share_unsupported} refused as unsupported_suite (suite outside this runtime's manifest)" if $share_unsupported.positive?
+puts "intent v2 primitives refused as unsupported_suite: #{$v2_prim_unsupported.sort.map { |k, n| "#{k} #{n}" }.join(', ')}" unless $v2_prim_unsupported.empty?
 puts "threshold_share: #{shares.length} vectors (#{$share_accept} valid accepted, #{$share_reject} invalid rejected)"
 puts "  v2.1 bare-agent-share rejected: #{$bare_rejected}; cross-signer-set replay rejected: #{$wrong_set_rejected}"
 if arts.is_a?(Array)
@@ -361,5 +498,8 @@ if arts.is_a?(Array)
   art_skipped_suites.sort.each { |k, n| puts "    skipped #{k}: #{n}" } unless art_skipped_suites.empty?
 end
 puts "caveat_eval: #{$ce_pass}/#{caveat_eval.length} pass; pca_header: #{$ph_pass}/#{pca_header.length} pass"
+puts "intent v2 vectors needing a suite this runtime does not implement (required deny): #{$v2_unsupported}"
+puts "intent v2 primitives ran: #{$v2_prim.sort.map { |k, n| "#{k} #{n}" }.join(', ')}"
+puts "intent v2 primitives SKIPPED (table or function absent): #{$v2_prim_skipped.sort.map { |k, n| "#{k} #{n}" }.join(', ')}" unless $v2_prim_skipped.empty?
 puts "assertions: #{$count}, failures: #{$fails}"
 exit($fails.zero? ? 0 : 1)

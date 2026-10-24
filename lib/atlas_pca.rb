@@ -48,9 +48,13 @@ module AtlasPca
     NUM_AT = /\G-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/n
     PLAIN_RUN = /\G[^"\\\x00-\x1f]+/n
 
-    def initialize(text, loose, any_top)
-      @loose = loose
-      @any_top = any_top
+    # json_text: the platform-JSON reading of RAW JSON TEXT carried by runners (`*_json` members, see parse_json_text):
+    # loose, any top-level value, a duplicate key keeps the LAST value (JSON.parse), and every number is its binary64
+    # value (a bare `-0` is negative zero).
+    def initialize(text, loose, any_top, json_text: false)
+      @loose = loose || json_text
+      @any_top = any_top || json_text
+      @json_text = json_text
       raise Malformed, 'not a string' unless text.is_a?(String)
 
       t = text.dup.force_encoding('UTF-8')
@@ -122,7 +126,7 @@ module AtlasPca
         raise Malformed, 'expected string key' unless @s.getbyte(@i) == 0x22
 
         k = parse_string
-        raise Malformed, 'duplicate key' if h.key?(k)
+        raise Malformed, 'duplicate key' if h.key?(k) && !@json_text
 
         skip_ws
         raise Malformed, 'expected colon' unless @s.getbyte(@i) == 0x3a
@@ -242,6 +246,7 @@ module AtlasPca
       raise Malformed, 'bad value' if lex.bytesize > 64 * 1024
 
       @i += lex.bytesize
+      return json_text_number(lex) if @json_text
       return loose_number(lex) if @loose
 
       AtlasPca.strict_number_lexeme(lex)
@@ -249,6 +254,21 @@ module AtlasPca
 
     def loose_number(lex)
       lex.match?(/[.eE]/) ? Float(lex) : lex.to_i
+    end
+
+    # A number as JSON.parse reads it, by its IEEE-754 binary64 value: a fraction or exponent form (`1.0`, `1e6`, `-0e0`)
+    # and an integer beyond 2^53-1 (rounded, like a double) are Floats; `-0` is negative zero (-0.0); any other integer
+    # lexeme is the Integer it denotes.
+    def json_text_number(lex)
+      return -0.0 if lex == '-0'
+
+      i = lex.match?(/[.eE]/) ? nil : lex.to_i
+      return i unless i.nil? || i.abs > MAX_SAFE
+
+      f = Float(lex)
+      # A negative lexeme whose value is zero (`-0.0`, `-0e0`, `-0E+0`) is negative zero; this does not rely on the
+      # platform's float conversion keeping the sign of zero.
+      f.zero? && lex.start_with?('-') ? -0.0 : f
     end
   end
 
@@ -623,48 +643,123 @@ module AtlasPca
     end
   end
 
-  # ======================= B4 post-quantum (ML-DSA-65, FIPS-204) =======================
-  # Mirrors packages/pca/src/pq.ts. Absent `alg` (or "ed25519") is byte-identical to the classical wire.
-  # ML-DSA-65 verification uses OpenSSL >= 3.5 (raw public key, pure mode, empty context): pk 1952 bytes,
-  # sig 3309 bytes. `alg`/`pq_pk` are SIGNED; `sig`/`pq_sig` are stripped from the signed body.
+  # ======================= B4 post-quantum suites (FIPS 204 ML-DSA, FIPS 205 SLH-DSA) =======================
+  # Mirrors packages/pca/src/pq.ts. Absent `alg` (or "ed25519") is byte-identical to the classical wire. Every PQ
+  # primitive is OpenSSL >= 3.5 (raw public key, pure mode, empty context — OpenSSL's defaults for these key types,
+  # = @noble/post-quantum): ML-DSA-65 / ML-DSA-87 and SLH-DSA-SHA2-128f / SLH-DSA-SHA2-256s, plus their
+  # hybrid-ed25519-* forms and the SUF-CMA hybrid-nested-ed25519-ml-dsa-65 (PQ half over msg || Ed25519 sig bytes).
+  # LESS (less-cat1 / hybrid-ed25519-less-cat1) goes through libatlas_less (AtlasPca::LessFfi, the patched reference C of
+  # sdks/pca-less-c; variable-length signature). Suite capability (packages/pca/conformance/SUITES.md): a registered suite
+  # this verifier cannot run — fn-dsa-512 / fn-dsa-1024 (OpenSSL has no FIPS 206), LESS without libatlas_less, or a PQ suite
+  # whose key type the loaded OpenSSL cannot build — fails closed with the distinct reason `unsupported_suite: <alg>`.
+  # `alg`/`pq_pk` are SIGNED; `sig`/`pq_sig` are stripped from the signed body.
   ML_DSA_65_PUBLIC_KEY_BYTES = 1952
   ML_DSA_65_SIGNATURE_BYTES = 3309
   ED25519_SIGNATURE_BYTES = 64
+  UNSUPPORTED_SUITE = 'unsupported_suite'
 
-  # suite name => [sig byte length, needs pq_pk, needs pq_sig]
-  SIG_SUITES = {
-    'ed25519' => [ED25519_SIGNATURE_BYTES, false, false],
-    'ml-dsa-65' => [ML_DSA_65_SIGNATURE_BYTES, true, false],
-    'hybrid-ed25519-ml-dsa-65' => [ED25519_SIGNATURE_BYTES, true, true]
+  # The closed TS suite registry (SIG_SUITES in pq.ts), in registry order.
+  REGISTERED_SUITES = %w[ed25519 ml-dsa-65 hybrid-ed25519-ml-dsa-65 hybrid-nested-ed25519-ml-dsa-65 slh-dsa-sha2-128f
+                         hybrid-ed25519-slh-dsa-sha2-128f ml-dsa-87 hybrid-ed25519-ml-dsa-87 slh-dsa-sha2-256s
+                         hybrid-ed25519-slh-dsa-sha2-256s fn-dsa-512 fn-dsa-1024 less-cat1 hybrid-ed25519-less-cat1].freeze
+
+  # OpenSSL key type => [public key bytes, signature bytes].
+  PQ_PRIMS = {
+    'ML-DSA-65' => [ML_DSA_65_PUBLIC_KEY_BYTES, ML_DSA_65_SIGNATURE_BYTES],
+    'ML-DSA-87' => [2592, 4627],
+    'SLH-DSA-SHA2-128f' => [32, 17_088],
+    'SLH-DSA-SHA2-256s' => [64, 29_792],
+    'LESS-cat1' => [97_484, 1329] # signature: the MAXIMUM (pq_sig_ok?)
   }.freeze
 
-  def mldsa65_verify(pk, msg, sig)
-    return false unless pk.bytesize == ML_DSA_65_PUBLIC_KEY_BYTES && sig.bytesize == ML_DSA_65_SIGNATURE_BYTES
+  # suite name => [sig byte length, needs pq_pk, needs pq_sig, PQ primitive (OpenSSL key type) or nil, nested]
+  SIG_SUITES = {
+    'ed25519' => [ED25519_SIGNATURE_BYTES, false, false, nil, false],
+    'ml-dsa-65' => [ML_DSA_65_SIGNATURE_BYTES, true, false, 'ML-DSA-65', false],
+    'hybrid-ed25519-ml-dsa-65' => [ED25519_SIGNATURE_BYTES, true, true, 'ML-DSA-65', false],
+    'hybrid-nested-ed25519-ml-dsa-65' => [ED25519_SIGNATURE_BYTES, true, true, 'ML-DSA-65', true],
+    'slh-dsa-sha2-128f' => [17_088, true, false, 'SLH-DSA-SHA2-128f', false],
+    'hybrid-ed25519-slh-dsa-sha2-128f' => [ED25519_SIGNATURE_BYTES, true, true, 'SLH-DSA-SHA2-128f', false],
+    'ml-dsa-87' => [4627, true, false, 'ML-DSA-87', false],
+    'hybrid-ed25519-ml-dsa-87' => [ED25519_SIGNATURE_BYTES, true, true, 'ML-DSA-87', false],
+    'slh-dsa-sha2-256s' => [29_792, true, false, 'SLH-DSA-SHA2-256s', false],
+    'hybrid-ed25519-slh-dsa-sha2-256s' => [ED25519_SIGNATURE_BYTES, true, true, 'SLH-DSA-SHA2-256s', false],
+    'less-cat1' => [1329, true, false, 'LESS-cat1', false],
+    'hybrid-ed25519-less-cat1' => [ED25519_SIGNATURE_BYTES, true, true, 'LESS-cat1', false]
+  }.freeze
 
-    OpenSSL::PKey.new_raw_public_key('ML-DSA-65', pk).verify(nil, sig, msg)
+  PQ_PRIM_AVAILABLE = {} # rubocop:disable Style/MutableConstant -- memo of the runtime capability probe
+
+  # Real capability probe: the loaded OpenSSL can build a raw public key of this type (no version-number gate).
+  def pq_prim_available?(prim)
+    return PQ_PRIM_AVAILABLE[prim] if PQ_PRIM_AVAILABLE.key?(prim)
+    return PQ_PRIM_AVAILABLE[prim] = LessFfi.available? if prim == LessFfi::KEY_TYPE
+
+    PQ_PRIM_AVAILABLE[prim] = begin
+      OpenSSL::PKey.new_raw_public_key(prim, "\x00".b * PQ_PRIMS.fetch(prim)[0])
+      true
+    rescue StandardError
+      false
+    end
+  end
+
+  # The capability manifest: the registered suites this verifier can verify in this runtime, in registry order.
+  def supported_suites
+    REGISTERED_SUITES.select { |a| SIG_SUITES.key?(a) && (SIG_SUITES[a][3].nil? || pq_prim_available?(SIG_SUITES[a][3])) }
+  end
+
+  # `n` is a signature length of `prim` (its fixed length; LESS-cat1: 1,153..1,329 in steps of 16).
+  def pq_sig_len_ok?(prim, n)
+    return LessFfi.sig_len_ok?(n) if prim == LessFfi::KEY_TYPE
+
+    PQ_PRIMS.key?(prim) && n == PQ_PRIMS[prim][1]
+  end
+
+  # Canonical base64url whose decoded length is a signature length of `prim`.
+  def pq_sig_ok?(v, prim)
+    b = b64d(v)
+    !b.nil? && pq_sig_len_ok?(prim, b.bytesize)
+  end
+
+  # Exact-length PQ verification over raw bytes (pure, empty context). Never raises.
+  def pq_verify(prim, pk, msg, sig)
+    pk_len, = PQ_PRIMS[prim]
+    return false if pk_len.nil? || pk.bytesize != pk_len || !pq_sig_len_ok?(prim, sig.bytesize)
+    return LessFfi.verify(pk, msg, sig) if prim == LessFfi::KEY_TYPE
+
+    OpenSSL::PKey.new_raw_public_key(prim, pk).verify(nil, sig, msg)
   rescue StandardError
     false
   end
 
-  def mldsa65_verify_b64u(pk_b64u, msg, sig_b64u)
-    pk = b64d(pk_b64u, ML_DSA_65_PUBLIC_KEY_BYTES)
-    sg = b64d(sig_b64u, ML_DSA_65_SIGNATURE_BYTES)
+  def pq_verify_b64u(prim, pk_b64u, msg, sig_b64u)
+    pk_len, = PQ_PRIMS[prim]
+    return false if pk_len.nil?
+
+    pk = b64d(pk_b64u, pk_len)
+    sg = b64d(sig_b64u)
     return false if pk.nil? || sg.nil?
 
-    mldsa65_verify(pk, msg, sg)
+    pq_verify(prim, pk, msg, sg)
   rescue StandardError
     false
   end
 
-  # Returns [suite_name, nil] for the default/known suite, else [nil, reason] (fail-closed).
+  def mldsa65_verify(pk, msg, sig) = pq_verify('ML-DSA-65', pk, msg, sig)
+
+  def mldsa65_verify_b64u(pk_b64u, msg, sig_b64u) = pq_verify_b64u('ML-DSA-65', pk_b64u, msg, sig_b64u)
+
+  # Returns [suite_name, nil] for the default / a supported suite, else [nil, reason] (fail-closed): a registered suite
+  # this runtime cannot verify is `unsupported_suite: <alg>`, anything else `unknown signature alg`.
   def resolve_suite(p)
     return ['ed25519', nil] unless p.key?('alg')
 
     alg = p['alg']
     return [nil, "'alg' must be a string"] unless alg.is_a?(String)
-    return [nil, "unknown signature alg '#{alg}'"] unless SIG_SUITES.key?(alg)
+    return [alg, nil] if supported_suites.include?(alg)
+    return [nil, "#{UNSUPPORTED_SUITE}: #{alg}"] if REGISTERED_SUITES.include?(alg)
 
-    [alg, nil]
+    [nil, "unknown signature alg '#{alg}'"]
   end
 
   # Validate `alg`/`sig`/`pq_pk`/`pq_sig` per suite. Returns nil when well-formed, else a reason.
@@ -683,18 +778,21 @@ module AtlasPca
     suite, err = resolve_suite(p)
     return err if suite.nil?
 
-    sig_bytes, needs_pk, needs_sig = SIG_SUITES[suite]
-    return "'sig' is not canonical base64url (#{sig_bytes} bytes) for alg '#{suite}'" if b64d(p['sig'], sig_bytes).nil?
+    sig_bytes, needs_pk, needs_sig, prim, = SIG_SUITES[suite]
+    # the PQ signature is `sig` for a pure suite and `pq_sig` for a hybrid; its length rule is the primitive's
+    sig_ok = !prim.nil? && !needs_sig ? pq_sig_ok?(p['sig'], prim) : !b64d(p['sig'], sig_bytes).nil?
+    return "'sig' is not canonical base64url (#{sig_bytes} bytes) for alg '#{suite}'" unless sig_ok
 
+    pk_len, pq_sig_len = prim.nil? ? [0, 0] : PQ_PRIMS[prim]
     if !check_pq_pk
       # share: `pq_pk` is an optional echo, judged by verify_threshold_share against the signer set
     elsif needs_pk
-      return "'pq_pk' is not canonical base64url (#{ML_DSA_65_PUBLIC_KEY_BYTES} bytes)" if b64d(p['pq_pk'], ML_DSA_65_PUBLIC_KEY_BYTES).nil?
+      return "'pq_pk' is not canonical base64url (#{pk_len} bytes)" if b64d(p['pq_pk'], pk_len).nil?
     elsif p.key?('pq_pk')
       return "'pq_pk' must be absent for alg '#{suite}'"
     end
     if needs_sig
-      return "'pq_sig' is not canonical base64url (#{ML_DSA_65_SIGNATURE_BYTES} bytes)" if b64d(p['pq_sig'], ML_DSA_65_SIGNATURE_BYTES).nil?
+      return "'pq_sig' is not canonical base64url (#{pq_sig_len} bytes)" unless pq_sig_ok?(p['pq_sig'], prim)
     elsif p.key?('pq_sig')
       return "'pq_sig' must be absent for alg '#{suite}'"
     end
@@ -743,19 +841,36 @@ module AtlasPca
     mldsa65_verify_b64u(pq.key, msg, sig_b64u)
   end
 
-  # Verify `p`'s signature(s) under its suite. FAIL-CLOSED. The PQ half verifies ONLY under `pq` (a PinnedPq), never under p['pq_pk'].
-  def verify_suite(p, holder, msg, pq)
+  # The ONE suite dispatch: `sig` / `pq_sig` of `p` under its suite, the Ed25519 half (if any) under `ed_pub` and checked
+  # FIRST (R6-API-04), the PQ half under `pq_pk_b64u`. FAIL-CLOSED: unsupported / unknown suite or any bad part => false.
+  def suite_dispatch(p, ed_pub, msg, pq_pk_b64u)
     suite, = resolve_suite(p)
     return false if suite.nil?
 
+    _, _, _, prim, nested = SIG_SUITES[suite]
     sig = p['sig']
-    case suite
-    when 'ed25519' then verify_b64u(holder, msg, sig)
-    when 'ml-dsa-65' then mldsa65_verify_pinned(pq, msg, sig)
-    when 'hybrid-ed25519-ml-dsa-65'
-      verify_b64u(holder, msg, sig) && mldsa65_verify_pinned(pq, msg, p['pq_sig'])
-    else false
+    return verify_b64u(ed_pub, msg, sig) if prim.nil?
+    return false unless pq_pk_b64u.is_a?(String)
+    return pq_verify_b64u(prim, pq_pk_b64u, msg, sig) unless suite.start_with?('hybrid-')
+    return false unless verify_b64u(ed_pub, msg, sig)
+
+    pq_msg = msg
+    if nested
+      ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES)
+      return false if ed_sig.nil?
+
+      pq_msg = msg.b + ed_sig
     end
+    pq_verify_b64u(prim, pq_pk_b64u, pq_msg, p['pq_sig'])
+  rescue StandardError
+    false
+  end
+
+  # Verify `p`'s signature(s) under its suite. FAIL-CLOSED. The PQ half verifies ONLY under `pq` (a PinnedPq), never under p['pq_pk'].
+  def verify_suite(p, holder, msg, pq)
+    return false unless pq.nil? || pq.is_a?(PinnedPq)
+
+    suite_dispatch(p, holder, msg, pq&.key)
   end
 
   # Verify a signature under the ARTIFACT'S OWN `pq_pk`. Only for surfaces whose key is authorised elsewhere (threshold shares,
@@ -793,17 +908,7 @@ module AtlasPca
   # Verify a threshold share's signature over `msg` under its suite (ed25519 by default; ml-dsa-65 / hybrid
   # dispatch identically to the leaf). FAIL-CLOSED: unknown suite or bad key/sig => false.
   def verify_share_suite(share, msg)
-    suite, = resolve_suite(share)
-    return false if suite.nil?
-
-    sig = share['sig']
-    case suite
-    when 'ed25519' then verify_b64u(share['publicKey'], msg, sig)
-    when 'ml-dsa-65' then mldsa65_verify_b64u(share['pq_pk'], msg, sig)
-    when 'hybrid-ed25519-ml-dsa-65'
-      verify_b64u(share['publicKey'], msg, sig) && mldsa65_verify_b64u(share['pq_pk'], msg, share['pq_sig'])
-    else false
-    end
+    suite_dispatch(share, share['publicKey'], msg, share['pq_pk'])
   end
 
   # Verify a threshold share against the v2.1 binding. The bound message is RECOMPUTED here from
@@ -1023,13 +1128,17 @@ module AtlasPca
 
   ROOT_PQ_PIN_REASON = "hop 0: root suite '%s' needs a PQ key pinned for the root issuer (policy.pqPins) or the verifier's stored grant " \
                        "(policy.trustedRoot); the root's own pq_pk proves nothing about who issued it (R3-01)"
+  ROOT_PQ_PIN_MISMATCH_REASON = "hop 0: root suite '%s': the server-side PQ pin for the root issuer (policy.pqPins) does not match " \
+                                "the stored grant's pq_pk (fail closed)"
 
   # The root hop has no parent holding a holder_pq commitment, so a non-ed25519 root's PQ key must come from a verifier-side
   # authority: the verifier's stored copy of this very grant (trusted_root, same content hash) or a pin for root.issuer.
-  # Returns [PinnedPq or nil, reason or nil]; mirrors rootPq in capability.ts.
+  # Returns [PinnedPq or nil, reason or nil]; mirrors rootPq in capability.ts. The decision is keyed on the REGISTERED suite
+  # (resolveSigAlg in the reference), not on whether this runtime's OpenSSL has it: a PQ root without a verifier-side
+  # authority gets the pin reason on every host; one that passes is still refused (unsupported_suite) at the signature.
   def resolve_root_pq(root, pq_pins, trusted_root)
-    suite, = resolve_suite(root)
-    return [nil, nil] if suite.nil? || !SIG_SUITES[suite][1]
+    suite = root.key?('alg') ? root['alg'] : 'ed25519'
+    return [nil, nil] if !suite.is_a?(String) || !REGISTERED_SUITES.include?(suite) || suite == 'ed25519'
 
     pk = root['pq_pk']
     trusted = nil
@@ -1040,7 +1149,12 @@ module AtlasPca
         trusted = nil
       end
     end
-    key = resolve_pq_key(root['issuer'], pk, pq_pins: pq_pins, trusted_pk: trusted)
+    # 0.4.2 fail closed: with the stored grant AND a pin for the issuer, both must agree (the grant never overrides a pin).
+    issuer = root['issuer']
+    if !trusted.nil? && pq_pins.is_a?(Hash) && issuer.is_a?(String) && pq_pins.key?(issuer) && pq_pins[issuer] != trusted
+      return [nil, format(ROOT_PQ_PIN_MISMATCH_REASON, suite)]
+    end
+    key = resolve_pq_key(issuer, pk, pq_pins: pq_pins, trusted_pk: trusted)
     key.nil? ? [nil, format(ROOT_PQ_PIN_REASON, suite)] : [key, nil]
   end
 
@@ -1115,7 +1229,7 @@ module AtlasPca
   TOP_REQUIRED = %w[ver action grant_ref cap_chain plan attestation provenance freshness counter risk_claim
                     aud iat exp sig].freeze
   TOP_OPTIONAL = %w[nonce caution rationale_commitment progress_step prohibition_evidence tool_binding
-                    zk_compliance bond_ref threshold alg pq_pk pq_sig].freeze
+                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session].freeze
   ACTION_KEYS = %w[verb resource params_digest reversibility_class].freeze
   PLAN_REQUIRED = %w[root inclusion_proof node_id].freeze
   PROOF_KEYS = %w[index size path].freeze
@@ -1170,6 +1284,10 @@ module AtlasPca
     return false if p.key?('caution') && !(number?(p['caution']) && p['caution'] >= 0 && p['caution'] <= 1)
     return false if p.key?('rationale_commitment') && !b32?(p['rationale_commitment'])
     return false if p.key?('tool_binding') && !b32?(p['tool_binding'])
+    # Intent Layer M2 (SIGNED): the `envelope.intent` slot, when present, is the closed five-member object.
+    return false if p.key?('intent') && !intent_wire_error(p['intent']).nil?
+    # Intent Layer v2 (SIGNED): the `intent_session` member, when present, passes rule 13's closed wire shape.
+    return false if p.key?('intent_session') && !validate_intent_session_wire(p['intent_session']).nil?
 
     th = p['threshold']
     return true unless p.key?('threshold')
@@ -1207,6 +1325,22 @@ module AtlasPca
   end
 
   # The CLOSED, strictly-typed wire form. A failure here is terminal.
+  # Suite capability: the `unsupported_suite: <alg>` reason of a wire refusal caused by a registered suite this runtime cannot
+  # verify (leaf, capability hop or threshold share), else nil.
+  def wire_unsupported_suite(p)
+    return nil unless p.is_a?(Hash)
+
+    objs = [p]
+    objs.concat(p['cap_chain'].select { |h| h.is_a?(Hash) }) if p['cap_chain'].is_a?(Array)
+    th = p['threshold']
+    objs.concat(th['shares'].select { |h| h.is_a?(Hash) }) if th.is_a?(Hash) && th['shares'].is_a?(Array)
+    objs.each do |o|
+      _, err = resolve_suite(o)
+      return err if err&.start_with?(UNSUPPORTED_SUITE)
+    end
+    nil
+  end
+
   def wire_ok?(p)
     return false unless p.is_a?(Hash) && tree_ok?(p)
     return false unless closed?(p, TOP_REQUIRED, TOP_OPTIONAL)
@@ -1281,7 +1415,8 @@ module AtlasPca
   #  - everything below needs a finite ctx.now: expires {at} now < at; not_before {at} now >= at; rate {max, per_secs} fewer
   #    than max entries t of recent_action_times with now - per_secs*1000 < t <= now; max_blast_radius {max} blast_radius <=
   #    max; reversibility_max {class} ctx.reversibility_class no more severe than class; delegation_depth {max} depth <= max;
-  #    budget_alloc {limit} limit finite >= 0.
+  #    budget_alloc {limit} limit finite >= 0; intent_session {session, seq, root, prev?} (Intent Layer v2) satisfied iff
+  #    well-formed (intent_session_caveat_error is nil): it constrains nothing per action.
   def evaluate_caveats(caveats, ctx)
     return [false, ['<malformed caveats>']] unless caveats.is_a?(Array)
 
@@ -1369,9 +1504,145 @@ module AtlasPca
     when 'budget_alloc'
       lim = finite_num(cv['limit'])
       !lim.nil? && lim >= 0
+    when 'intent_session'
+      # Intent Layer v2 session binding (rule 13): no per-action constraint here; satisfied iff well-formed.
+      intent_session_caveat_error(cv).nil?
     else
       false
     end
+  end
+
+  # ======================= Intent Layer M2: envelope.intent =======================
+  # Normative rules: packages/pca/src/intent-binding.ts and conformance/README.md "Intent binding". The optional
+  # top-level `intent` slot is SIGNED (part of the canonical body). The `intent` check runs after `counter` and is
+  # reported iff the PCActn carries `intent` OR the verifier's intent policy is ACTIVE; otherwise the verdict is the
+  # pre-M2 one.
+  INTENT_GOAL_PREFIX = 'pca-intent:v1:'
+  # Intent Layer v2 session grants (G_0 and the delta grants D_k): `pca-intent:v2:<session>:<map_digest>` (rule 13).
+  INTENT_GOAL_V2_PREFIX = 'pca-intent:v2:'
+  # Intent Layer v2 session grants over a COMMITTED map (rule 19): `pca-intent:v2c:<session>:<map_commit>`.
+  INTENT_GOAL_V2C_PREFIX = 'pca-intent:v2c:'
+  INTENT_GOAL_COMMIT_DOMAIN = "atlas-pca/goal/v1\x00"
+  PPM_ONE = 1_000_000
+  MAX_INTENT_GOAL_SALT_LEN = 128
+  ENVELOPE_INTENT_FIELDS = %w[ref map_digest goal_salt fidelity_ppm residual_risk_ppm].freeze
+
+  # Wire validation of the `intent` slot: nil when well-formed, else a short reason. Every step is type-guarded, so it
+  # does not raise on any JSON value (and wire_ok? rescues anyway).
+  def intent_wire_error(v)
+    return "'intent' must be an object" unless v.is_a?(Hash)
+
+    unknown = v.keys.find { |k| !ENVELOPE_INTENT_FIELDS.include?(k) }
+    return "unknown field 'intent.#{unknown}'" unless unknown.nil?
+
+    missing = ENVELOPE_INTENT_FIELDS.find { |k| !v.key?(k) }
+    return "missing field 'intent.#{missing}'" unless missing.nil?
+    return "'intent.ref' is not canonical base64url (32 bytes)" unless b32?(v['ref'])
+    return "'intent.map_digest' is not canonical base64url (32 bytes)" unless b32?(v['map_digest'])
+
+    gs = v['goal_salt']
+    unless utf8_string?(gs) && !gs.empty? && gs.bytesize <= MAX_INTENT_GOAL_SALT_LEN
+      return "'intent.goal_salt' must be a non-empty string (<= 128 UTF-8 bytes)"
+    end
+
+    fp = v['fidelity_ppm']
+    return "'intent.fidelity_ppm' must be a safe integer in [0, 1000000]" unless safe_int?(fp) && fp >= 0 && fp <= PPM_ONE
+
+    rr = v['residual_risk_ppm']
+    return "'intent.residual_risk_ppm' must be a non-negative safe integer" unless safe_int?(rr) && rr >= 0
+
+    nil
+  end
+
+  # The goal string that binds a grant to an intent statement (and optionally an Intent Map).
+  def intent_goal(ref, map_digest = nil)
+    INTENT_GOAL_PREFIX + ref + (map_digest.nil? || map_digest.empty? ? '' : ":#{map_digest}")
+  end
+
+  # The goal commitment an `envelope.intent` claims the root grant carries. `session` (Intent Layer v2, rule 13 amends
+  # rule 12 step 2): when the PCActn carries a wire-valid `intent_session`, the goal is the v2 session goal
+  # "pca-intent:v2:" + session + ":" + map_digest instead of the v1 goal; with `map_form` "commit" (rule 19) the goal is
+  # "pca-intent:v2c:" + session + ":" + map_digest (the map commitment).
+  def intent_goal_commit(ref, map_digest, goal_salt, session = nil, map_form = nil)
+    prefix = map_form == 'commit' ? INTENT_GOAL_V2C_PREFIX : INTENT_GOAL_V2_PREFIX
+    goal = session.nil? ? intent_goal(ref, map_digest) : "#{prefix}#{session}:#{map_digest}"
+    hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => goal, 'salt' => goal_salt })
+  end
+
+  # A policy Hash with String keys (Symbol keys are accepted too), or nil when `policy` is not a Hash.
+  def normalize_intent_policy(policy)
+    policy.is_a?(Hash) ? policy.transform_keys(&:to_s) : nil
+  end
+
+  # True iff the policy is active: `require` is exactly true, or either threshold key is present.
+  def intent_policy_active?(policy)
+    pol = normalize_intent_policy(policy)
+    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm'))
+  end
+
+  # RAW JSON TEXT as the platform JSON parser of the reference reads it (conformance README "Raw JSON text members":
+  # `pcactn_json` aside, every `*_json` member: `context.intent_policy_json`, a primitive's `input_json`, the diff-fuzz
+  # driver's JSON-encoded members). The library's own tokenizer, in a lax mode: any top-level value, every number taken by
+  # its binary64 value (`1.0` / `1e6` / an integer beyond 2^53-1 are Floats; a bare `-0`, `-0.0`, `-0e0` are negative
+  # zero, which Ruby's JSON would turn into Integer 0), a duplicate key keeps the last value. Numbers are recognised only
+  # as tokens, so text inside strings and keys (`":-0,"`) is never touched. Raises Malformed on invalid JSON.
+  def parse_json_text(text)
+    JsonParser.new(text, false, false, json_text: true).parse_document
+  rescue SystemStackError
+    raise Malformed, 'nesting too deep'
+  end
+
+  # An intent policy from raw JSON TEXT (conformance `intent_policy_json`): parse_json_text (a non-Hash is no policy).
+  def parse_intent_policy_json(text) = parse_json_text(text)
+
+  # A policy threshold as an Integer, or nil when misconfigured. Valid iff its NUMERIC VALUE is a safe integer >= 0: an
+  # Integer, or an integral Float such as 950000.0 / 1e6; not -0.0, NaN/Infinity, a fraction, > 2^53-1, nil/bool/String.
+  def intent_threshold(x)
+    return x if x.is_a?(Integer) && x >= 0 && x <= MAX_SAFE
+    return nil unless x.is_a?(Float) && x.finite? && x == x.floor && x >= 0 && x <= MAX_SAFE
+    return nil if (1.0 / x).negative? # x >= 0 here, so only -0.0 gives -Infinity
+
+    x.to_i
+  end
+
+  # The root grant's goal commitment: the FIRST `envelope` caveat's String `goal_commit`, else nil.
+  def root_goal_commit(grant)
+    return nil unless grant.is_a?(Hash) && grant['caveats'].is_a?(Array)
+
+    env = grant['caveats'].find { |c| c.is_a?(Hash) && c['type'] == 'envelope' }
+    env && env['goal_commit'].is_a?(String) ? env['goal_commit'] : nil
+  end
+
+  # The `intent` check (rules 0-4). `intent` is the wire-validated slot (nil when absent); `session` the PCActn's
+  # `intent_session.session` when it carries one (the v2 goal). Returns [:absent, nil], [:pass, nil] or [:fail, reason].
+  # Never raises.
+  def decide_intent_binding(intent, grant, policy = nil, session = nil, map_form = nil)
+    active = intent_policy_active?(policy)
+    return [:absent, nil] if intent.nil? && !active
+
+    pol = normalize_intent_policy(policy) || {}
+    lo = intent_threshold(pol['min_fidelity_ppm']) # nil when unset or misconfigured
+    hi = intent_threshold(pol['max_residual_risk_ppm'])
+    if (pol.key?('min_fidelity_ppm') && lo.nil?) || (pol.key?('max_residual_risk_ppm') && hi.nil?)
+      return [:fail, 'intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)']
+    end
+    return [:fail, 'this verifier requires an intent binding but the PCActn carries none'] if intent.nil?
+
+    commit = root_goal_commit(grant)
+    return [:fail, 'the root grant carries no envelope goal commitment to bind the intent to'] if commit.nil?
+    if intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
+      return [:fail, "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"]
+    end
+    if lo && intent['fidelity_ppm'] < lo
+      return [:fail, "intent fidelity #{intent['fidelity_ppm']} ppm is below the policy minimum #{lo}"]
+    end
+    if hi && intent['residual_risk_ppm'] > hi
+      return [:fail, "intent residual risk #{intent['residual_risk_ppm']} ppm exceeds the policy maximum #{hi}"]
+    end
+
+    [:pass, nil]
+  rescue StandardError => e
+    [:fail, "intent binding error (fail closed): #{e.message}"]
   end
 
   # ======================= PCActn =======================
@@ -1383,14 +1654,23 @@ module AtlasPca
 
   # pcactn: parsed Hash OR raw JSON text (String) which MUST pass the strict profile (failure == wire).
   # Returns Verdict. Wire failure is terminal: checks == { 'wire' => false }.
-  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil)
-    verify_pcactn_unchecked(pcactn, grant, now: now, audience: audience, allowed_suites: allowed_suites)
+  # intent_policy (Intent Layer M2): optional Hash { 'require' => bool, 'min_fidelity_ppm' => Integer,
+  # 'max_residual_risk_ppm' => Integer } (String or Symbol keys, all optional). The `intent` check is reported (after
+  # `counter`) iff the PCActn carries `intent` or the policy is active.
+  # intent_v2 (Intent Layer v2): optional Hash (String keys) of verifier state + policy: policy {session {require,
+  # max_revocation_age_s}, schema {closed_world}}, params, schema {docs, keys}, session {root, grants, revocation {epoch,
+  # proofs}}, layers, acc {state, monitors, receipts, last_seq, sequencer_keys}, wb {artifacts, policy}. The v2 checks
+  # (schema, intent_session, layers, accumulators, facts, provenance, classes; see decide_intent_v2) follow `intent`, each
+  # reported only when the PCActn carries `intent_session` or a v2 policy is active; allow requires all reported ones.
+  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+    verify_pcactn_unchecked(pcactn, grant, now: now, audience: audience, allowed_suites: allowed_suites,
+                                           intent_policy: intent_policy, intent_v2: intent_v2)
   rescue StandardError => e
     # TOTAL (R6-05): a residual fault on hostile input is a terminal wire refusal, never an exception.
     Verdict.new(false, { 'wire' => false }, "wire: malformed input (#{e.class})")
   end
 
-  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil)
+  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
     if pcactn.is_a?(String)
       # FIRST: before any parsing (String#bytesize is the raw byte length)
       return Verdict.new(false, { 'wire' => false }, "wire: #{ARTIFACT_SIZE_REASON}") if pcactn.bytesize > MAX_ARTIFACT_BYTES
@@ -1401,7 +1681,9 @@ module AtlasPca
         return Verdict.new(false, { 'wire' => false }, 'wire: strict JSON profile violation')
       end
     end
-    return Verdict.new(false, { 'wire' => false }, 'wire: malformed PCActn') unless wire_ok?(pcactn)
+    unless wire_ok?(pcactn)
+      return Verdict.new(false, { 'wire' => false }, "wire: #{wire_unsupported_suite(pcactn) || 'malformed PCActn'}")
+    end
 
     checks = { 'wire' => true }
     reason = ''
@@ -1465,8 +1747,33 @@ module AtlasPca
 
     run.call('counter', 'not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
 
+    # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
+    # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
+    session = pcactn.key?('intent_session') ? pcactn['intent_session']['session'] : nil
+    map_form = pcactn.key?('intent_session') ? pcactn['intent_session']['map_form'] : nil
+    intent_status, intent_why = decide_intent_binding(pcactn['intent'], grant, intent_policy, session, map_form)
+
     CHECK_ORDER.each { |k| checks[k] = false unless checks.key?(k) }
     ordered = CHECK_ORDER.to_h { |k| [k, checks[k]] }
+    unless intent_status == :absent
+      ordered['intent'] = intent_status == :pass
+      reason = "intent: #{intent_why}" if intent_status == :fail && reason.empty?
+    end
+    # Intent Layer v2: schema (14), intent_session (13), layers (V5), accumulators (15), facts / provenance / classes
+    # (16-18), each reported only when the PCActn carries `intent_session` or a v2 policy is active.
+    decide_intent_v2(pcactn, grant, intent_v2, now)['checks'].each do |c|
+      ordered[c['name']] = c['ok'] ? true : false
+      reason = "#{c['name']}: #{c['reason'] || 'rejected'}" if !c['ok'] && reason.empty?
+    end
     Verdict.new(ordered.values.all?, ordered, reason)
   end
 end
+
+# Intent Layer v2 (each file reopens module AtlasPca): W-A rules 13-15 and the pipeline (intent_v2), W-B rules 16-18
+# (intent_wb), the predicate DSL and its regex engine (predicates, safe_regex) and the V5 ceilings (intent_layers).
+require_relative 'atlas_pca/less_ffi'
+require_relative 'atlas_pca/safe_regex'
+require_relative 'atlas_pca/predicates'
+require_relative 'atlas_pca/intent_layers'
+require_relative 'atlas_pca/intent_wb'
+require_relative 'atlas_pca/intent_v2'

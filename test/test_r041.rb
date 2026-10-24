@@ -16,7 +16,8 @@ require 'openssl'
 DIR = File.expand_path('../conformance', __dir__)
 DOC = AtlasPca.parse_json(File.read(File.join(DIR, 'vectors.json'), encoding: 'UTF-8'), loose: true)
 JSON_KEYS = JSON.parse(File.read(File.join(DIR, 'keys.json')))
-SUPPORTED = %w[ed25519 ml-dsa-65 hybrid-ed25519-ml-dsa-65].freeze
+# Suite capability: this runtime's manifest (OpenSSL decides which PQ suites are present).
+SUPPORTED = AtlasPca.supported_suites.freeze
 
 $fails = 0
 $count = 0
@@ -152,18 +153,25 @@ check(status == 401 && body.join.include?('not canonical base64url'), "non-UTF-8
 
 # ---------------------------------------------------------------- per-suite share wire vectors
 ran = 0
+unsupported = 0
 DOC['vectors'].each do |v|
   next unless v['name'].start_with?('r041-share-')
-  next if v['requires'].is_a?(String) && !SUPPORTED.include?(v['requires'])
 
-  ran += 1
   ctx = v['context']
   got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'])
   exp = v['expect']
+  if v['requires'].is_a?(String) && !SUPPORTED.include?(v['requires'])
+    # a suite this runtime lacks: not compared, refused fail closed with unsupported_suite
+    unsupported += 1
+    check(!got.allow && got.reason.to_s.include?(AtlasPca::UNSUPPORTED_SUITE), "#{v['name']}: want an unsupported_suite refusal (#{got.reason})")
+    next
+  end
+
+  ran += 1
   check(got.allow == exp['allow'], "#{v['name']}: allow=#{got.allow} want #{exp['allow']} (#{got.reason})")
   exp['checks'].each { |k, w| check(got.checks[k] == w, "#{v['name']}: check #{k}=#{got.checks[k]} want #{w}") }
 end
-check(ran == 18, "r041-share vectors run: #{ran}")
+check(ran + unsupported == 20, "r041-share vectors: #{ran} run + #{unsupported} unsupported_suite")
 
 # ---------------------------------------------------------------- native construction (US-ASCII strings)
 # A PCActn built as a Hash straight from the library's own helpers (b64e, hash_canonical, merkle_root, ...), signed, then

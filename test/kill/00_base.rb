@@ -6,7 +6,9 @@
 module MutationKill
   TESTS = [] # rubocop:disable Style/MutableConstant
 
-  def self.t(name, &blk)
-    TESTS << [name, blk]
+  # `needs`: a signature suite the test exercises for real (an OpenSSL without it - e.g. 3.0 - cannot run it). run_kill.rb
+  # skips such a test, with a count, when the runtime's manifest lacks the suite; the mutation oracle runs on a host with it.
+  def self.t(name, needs: nil, &blk)
+    TESTS << [name, blk, needs]
   end
 end

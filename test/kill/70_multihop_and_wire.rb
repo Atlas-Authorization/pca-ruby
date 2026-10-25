@@ -38,7 +38,7 @@ module MutationKill
       AtlasPca.verify_chain([r3, h3], iss, true) == ['hop 1: caveat 0 altered or reordered', false]
   end
 
-  t('a pure ML-DSA-65 leaf is bound by the LEAF hop holder_pq on a two-hop chain') do
+  t('a pure ML-DSA-65 leaf is bound by the LEAF hop holder_pq on a two-hop chain', needs: 'ml-dsa-65') do
     v = Corpus.core['vectors'].find { |x| x['expect']['allow'] == true && x['pcactn'].is_a?(Hash) && x['requires'].nil? }
     root, hop, = M.chain([], [], pq: true)
     p = Marshal.load(Marshal.dump(v['pcactn'])).reject { |k, _| %w[pq_sig threshold].include?(k) }

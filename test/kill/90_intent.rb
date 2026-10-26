@@ -22,7 +22,7 @@ module MutationKill
     MIS = 'intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)'
     NOENV = 'the root grant carries no envelope goal commitment to bind the intent to'
     OPEN = "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"
-    BASE = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+    BASE = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
     def keys = (@keys ||= JSON.parse(File.read(KEYS)))
     def b64(bin) = Base64.urlsafe_encode64(bin, padding: false)

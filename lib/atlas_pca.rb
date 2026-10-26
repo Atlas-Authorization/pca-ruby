@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Reference verifier for the CORE PCActn checks (wire format v2): strict wire form, freshness binding,
-# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter.
+# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter_format.
 # Stdlib only (OpenSSL >= 3 for the raw Ed25519 equation; torsion / small-order / canonicality are checked here).
 # Normative spec: packages/pca/conformance/README.md.
 require 'digest'
@@ -28,7 +28,7 @@ module AtlasPca
   MAX_LIFETIME_MS = 3_600_000
   MAX_SKEW_MS = 60_000
   MAX_SAFE = (2**53) - 1
-  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
   class Malformed < StandardError; end
 
@@ -1745,7 +1745,7 @@ module AtlasPca
       end
     end
 
-    run.call('counter', 'not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
+    run.call('counter_format', 'missing or not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
 
     # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
     # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
@@ -1777,3 +1777,5 @@ require_relative 'atlas_pca/predicates'
 require_relative 'atlas_pca/intent_layers'
 require_relative 'atlas_pca/intent_wb'
 require_relative 'atlas_pca/intent_v2'
+# 0.5: the full authorize() pipeline (opt-in; verify_pcactn is unchanged).
+require_relative 'atlas_pca/authorize'

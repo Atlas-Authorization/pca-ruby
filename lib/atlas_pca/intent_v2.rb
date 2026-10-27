@@ -1816,7 +1816,10 @@ module AtlasPca
       if ctx.key?('policy')
         # closed member sets; every flag a JSON boolean and every number a safe integer when present (absent = default)
         pol = ctx['policy']
-        js_keys(pol).each { |k| return "policy: unknown member '#{k}'" unless %w[session schema acc map].include?(k) }
+        js_keys(pol).each { |k| return "policy: unknown member '#{k}'" unless %w[session schema acc map model_polarity].include?(k) }
+        if pol.key?('model_polarity') && !%w[strict legacy].include?(pol['model_polarity'])
+          return "policy.model_polarity must be 'strict' or 'legacy'"
+        end
         return 'policy.session must be an object' unless opt_obj?(pol, 'session')
 
         if pol.key?('session')
@@ -1855,6 +1858,7 @@ module AtlasPca
         end
       end
       return 'params must be an object' unless opt_obj?(ctx, 'params')
+      return 'env must be an object' unless opt_obj?(ctx, 'env')
 
       %w[schema session acc].each { |k| return "#{k} must be an object" unless opt_obj?(ctx, k) }
       return 'map must be an object' unless opt_obj?(ctx, 'map')
@@ -2253,6 +2257,7 @@ module AtlasPca
       end
       unless present
         run.call('map') { map_step(p, ctx) } if map_active
+        model_rules(p, grant, ctx, out, run, action)
         return out
       end
 
@@ -2294,10 +2299,58 @@ module AtlasPca
           %w[world prov class].each { |k| merged[k] = we[k] if truthy?(prop(we, k)) }
           out['env'] = merged
         end
+        out['single_source'] = wb['single_source'].dup if wb['single_source'].is_a?(Array) && !wb['single_source'].empty?
       end
+      model_rules(p, grant, ctx, out, run, action)
       out
     rescue StandardError, SystemStackError
       out
+    end
+
+    # The predicate lists a model-derived path could widen: the grant's allow-list and the ceilings (V5 layers).
+    def allow_side_predicates(env, ctx)
+      lists = [env.nil? ? nil : env['predicates']]
+      layers = opt(ctx, 'layers')
+      %w[org site std].each { |k| lists << (layers[k].is_a?(Hash) ? layers[k]['predicates'] : nil) } if layers.is_a?(Hash)
+      lists
+    end
+
+    # Rules 20 and 21, evaluated last (after `classes`, so the verifier-computed `env` is complete). Both read the signed ENVELOPE
+    # of the stored grant: `units` (20) is reported iff `envelope.units` is present; `tighten` (21) iff `envelope.tighten` or a
+    # `model_polarity` (envelope or policy) is present, or a grant-side `where` reads a model-derived env path.
+    def model_rules(p, grant, ctx, out, run, action)
+      env = AtlasPca.read_envelope(grant)
+      preds = allow_side_predicates(env, ctx)
+      if env && env.key?('units')
+        run.call('units') do
+          s = out['schema'] ? okv('doc' => out['schema']) : schema_step(p, ctx)
+          next s unless s['ok']
+
+          doc = s['doc']
+          v = schema_verb(doc, action['verb'])
+          d = AtlasPca.decide_units({ 'units' => env['units'], 'schema_units' => doc['units'], 'verb_params' => v.is_a?(Hash) ? v['params'] : nil,
+                                      'verb' => action['verb'], 'predicates' => preds })
+          d['ok'] ? okv : bad(d['reason'])
+        end
+      end
+      single = out['single_source'] || []
+      pol = opt(opt(ctx, 'policy'), 'model_polarity')
+      polarity = if pol == 'strict' then nil
+                 elsif !undef?(pol) then pol
+                 else env && env.key?('model_polarity') ? env['model_polarity'] : nil
+                 end
+      return unless (env && env.key?('tighten')) || !polarity.nil? || !undef?(pol) || !AtlasPca.model_paths_read(preds, single).empty?
+
+      run.call('tighten') do
+        host = opt(ctx, 'env')
+        menv = (host.is_a?(Hash) ? host : {}).merge(out['env'] || {})
+        inp = { 'predicates' => preds, 'single_source' => single, 'context' => { 'action' => action, 'env' => menv } }
+        inp['tighten'] = env['tighten'] if env && env.key?('tighten')
+        inp['polarity'] = polarity unless polarity.nil?
+        r = AtlasPca.decide_tighten(inp)
+        out['legacy_model_polarity'] = true if r['legacy']
+        r['outcome'] == 'ok' ? okv : bad(r['reason'] || 'refused')
+      end
     end
 
     # True iff any v2 check would be reported (the PCActn carries `intent_session`, a v2 policy is active, or a present

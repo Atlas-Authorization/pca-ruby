@@ -6,7 +6,10 @@ require 'stringio'
 module MutationKill
   module RackT
     module_function
-    def mw = AtlasPca::RackMiddleware
+    SigOnly = Class.new(AtlasPca::RackMiddleware) do
+      def initialize(app, **o) = super(app, signature_only: true, **o)
+    end
+    def mw = SigOnly
     def vec = (@vec ||= Corpus.core['vectors'].find { |v| v['expect']['allow'] == true && (v['requires'].nil? || v['requires'].empty? || v['requires'] == 'ed25519') && v.key?('pcactn') })
     def pa = vec['pcactn']
     def grant = vec['grant']

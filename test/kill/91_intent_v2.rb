@@ -24,7 +24,7 @@ module MutationKill
     REV_D = "atlas-pca/revepoch/v1\u0000"
     RECEIPT_D = "atlas-pca/acc-receipt/v1\u0000"
     KEYS_D = "atlas-pca/sequencer-keys/v1\u0000"
-    BASE = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+    BASE = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
     def seed(l) = Digest::SHA256.digest("atlas-pca-conformance/#{l}")
     def b64(bin) = Base64.urlsafe_encode64(bin, padding: false)
@@ -370,7 +370,7 @@ module MutationKill
       # the same grant without the member: the v1 goal does not open the v2 commitment, and no v2 check is reported
       v.verify(v.pcactn(g, is: nil), g, nil).checks.then { |c| c['intent'] == false && c.keys == BASE_KEYS_V2 }
   end
-  BASE_KEYS_V2 = (%w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter] + ['intent']).freeze
+  BASE_KEYS_V2 = (%w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format] + ['intent']).freeze
 
   t('v2 caveat: a well-formed intent_session caveat is satisfied (needs ctx.now), a malformed one is not') do
     v = V2
@@ -1238,7 +1238,7 @@ module MutationKill
     p = v.p0
     g = v.g0
     header = Base64.urlsafe_encode64(JSON.generate(p), padding: false)
-    mk = ->(iv2) { AtlasPca::RackMiddleware.new(->(_e) { [200, {}, ['ok']] }, audience: MutationKill::V2::AUD, resolve_grant: ->(_r) { g }, now: MutationKill::V2::NOW, intent_v2: iv2) }
+    mk = ->(iv2) { AtlasPca::RackMiddleware.new(->(_e) { [200, {}, ['ok']] }, audience: MutationKill::V2::AUD, resolve_grant: ->(_r) { g }, now: MutationKill::V2::NOW, intent_v2: iv2, signature_only: true) }
     seen = []
     ok = mk.call(->(pc) { seen << pc['grant_ref']; v.ctx }).call('HTTP_PCA_ACTION' => header)
     deny = mk.call(->(_pc) { v.ctx('params' => v.params('total' => 1)) }).call('HTTP_PCA_ACTION' => header)

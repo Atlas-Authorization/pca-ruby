@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Full adversarial corpus from the flagship
         shell: bash
-        run: .github/scripts/fetch-flagship-corpus.sh $([ "$RUNNER_OS" = Windows ] || echo --less)
+        run: .github/scripts/fetch-flagship-corpus.sh --layout $([ "$RUNNER_OS" = Windows ] || echo --less)
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
@@ -45,6 +45,45 @@ jobs:
         run: ruby conformance.rb
       - name: Rack middleware
         run: ruby -Ilib -Itest test/test_middleware.rb
+      - name: Decision, rules 20-21 and escalation answers (shared decision-vectors.json; a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/decision-vectors.json || test -s packages/pca/conformance/decision-vectors.json
+          ruby -Ilib test/test_decision.rb
+      - name: Signed agent passport vectors (packages/pca/conformance/passport-vectors.json)
+        shell: bash
+        run: |
+          test -s conformance/passport-vectors.json || test -s packages/pca/conformance/passport-vectors.json
+          ruby -Ilib test/test_passport.rb
+      - name: Optimistic-path and transparency-ledger vectors (a missing file fails, never skips)
+        shell: bash
+        run: |
+          for f in optimistic-vectors ledger-vectors; do test -s conformance/$f.json || test -s packages/pca/conformance/$f.json; done
+          ruby -Ilib test/test_ext_vectors.rb
+      - name: Intent-state vectors (accumulators, monitors, history windows, sequencer receipts; a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/intent-state-vectors.json || test -s packages/pca/conformance/intent-state-vectors.json
+          ruby -Ilib test/test_intent_state.rb
+      - name: Mesh proof vectors (a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/mesh-vectors.json || test -s packages/pca/conformance/mesh-vectors.json
+          ruby -Ilib test/test_mesh.rb
+      - name: Goal-to-decision vectors (packages/pca-conformance/vectors/goal from the flagship layout; a missing corpus fails)
+        run: ruby test/test_goal_vectors.rb
+      - name: NVIDIA SPDM version rule
+        run: ruby -Ilib test/test_nvidia_spdm_version.rb
+      - name: Vendor attestation evidence vectors (AMD SEV-SNP, Intel TDX, Azure MAA, GCP, NVIDIA + strict X.509; the flagship generates the file; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/attestation-evidence-vectors.json || test -s packages/pca/conformance/attestation-evidence-vectors.json
+          ruby -Ilib test/test_attestation_vectors.rb
+      - name: Rules 20-21 end to end through authorize (model-rules-vectors.json; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/model-rules-vectors.json || test -s packages/pca/conformance/model-rules-vectors.json
+          ruby -Ilib test/test_model_rules.rb
       - name: 0.4.1 suite
         run: ruby -Ilib test/test_r041.rb
       - name: Mutation-kill registry

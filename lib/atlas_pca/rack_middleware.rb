@@ -43,18 +43,47 @@ module AtlasPca
   #                   evaluated per request (the host's store lookup: session root, held grants, accumulator pre-state
   #                   under its row lock, receipts, plaintext params). A callable that raises fails closed: 403
   #                   `intent_v2_context_error`, and the verifier is not run.
+  #   signature_only: (optional, default false) opt in to verifying the signature and chain only (the core verifier): no
+  #                   caveats, replay, revocation or operation binding. Giving it together with `authorize:` raises.
+  #   authorize:      (0.5 default path) the full AtlasPca.authorize pipeline: an
+  #                   AtlasPca::AuthorizeOptions, or a Hash (Symbol or String keys) of its members:
+  #                     state_store: replay store with an atomic claim(key, counter) (required)
+  #                     is_revoked:  ->(pcactn, grant) { true | false } (required; only false passes)
+  #                     operation:   ->(env) { {verb:, resource:, params:} | nil }, the operation this route executes,
+  #                                  from the request (method, path, parsed body), never from the PCActn. nil (or no
+  #                                  mapping, or a mapping that raises) denies with a 403.
+  #                     plan:        'single-step' (default) or nil (then `context` must supply the authorized plan)
+  #                     context:     ->(pcactn) { Hash | nil } (see AtlasPca.authorize)
+  #                     require:     extra check names that must pass
+  #                     escalation_principals: pinned principal keys whose EscalationAnswers count (header
+  #                                  PCA-Escalation-Answer: strict base64url JSON, else the JSON body member
+  #                                  `escalation_answer`); none pinned: every escalate is refused. The store must offer last(key).
+  #                   A denial is a 401 (`invalid_pcactn`) or 403 (`access_denied`) before the app runs; on success
+  #                   env['pca'] also holds 'authorization' (the AtlasPca::AuthorizeResult) and 'operation' (the bound
+  #                   AtlasPca::AuthorizedOperation). Without `authorize:` (and without `signature_only: true`) the options are empty: every
+  #                   request is refused with a 403 `authorize_config` that names the missing components.
   class RackMiddleware
     REALM = 'pca'
     DEFAULT_HEADER = 'HTTP_PCA_ACTION'
 
     class DecodeError < StandardError; end
 
-    def initialize(app, audience:, resolve_grant:, now: nil, header: DEFAULT_HEADER, intent_policy: nil, intent_v2: nil)
+    AUTHORIZE_KEYS = %i[state_store is_revoked plan context require operation escalation_principals].freeze
+    ESCALATION_HEADER = 'HTTP_PCA_ESCALATION_ANSWER'
+
+    def initialize(app, audience:, resolve_grant:, now: nil, header: DEFAULT_HEADER, intent_policy: nil, intent_v2: nil,
+                   authorize: nil, signature_only: false)
       raise ArgumentError, 'audience: is required' if audience.nil? || audience.to_s.empty?
       raise ArgumentError, 'resolve_grant: must respond to #call' unless resolve_grant.respond_to?(:call)
       unless intent_v2.nil? || intent_v2.is_a?(Hash) || intent_v2.respond_to?(:call)
         raise ArgumentError, 'intent_v2: must be a Hash or respond to #call'
       end
+
+      if signature_only && !authorize.nil?
+        raise ArgumentError, 'signature_only: and authorize: are mutually exclusive (signature_only skips the checks authorize enforces)'
+      end
+
+      @authorize = signature_only ? nil : authorize_options(authorize || {})
 
       @app = app
       @audience = audience
@@ -73,6 +102,7 @@ module AtlasPca
           return unauthorized(e.message)
         end
       return unauthorized('no PCActn presented') if pcactn.nil?
+      return call_authorize(env, pcactn) unless @authorize.nil?
 
       # Mirrors TS requirePCA: a grant_ref that is not a String (absent, nil, Array, Hash, Integer) is a malformed PCActn
       # (401 invalid_pcactn) and never reaches the host's resolver.
@@ -106,6 +136,69 @@ module AtlasPca
     end
 
     private
+
+    def authorize_options(opt)
+      return nil if opt.nil?
+      return opt if opt.is_a?(AtlasPca::AuthorizeOptions)
+      raise ArgumentError, 'authorize: must be an AtlasPca::AuthorizeOptions or a Hash' unless opt.is_a?(Hash)
+
+      h = opt.to_h { |k, v| [k.to_sym, v] }
+      unknown = h.keys - AUTHORIZE_KEYS
+      raise ArgumentError, "authorize: unknown option(s) #{unknown.join(', ')}" unless unknown.empty?
+
+      AtlasPca::AuthorizeOptions.new(**h)
+    end
+
+    # The authorize path: the route's operation, then the full pipeline; the app runs only on an allow.
+    def call_authorize(env, pcactn)
+      opts = @authorize
+      mapping = opts.operation
+      operation =
+        begin
+          # no mapping: authorize reports a missing store / revocation check first (authorize_config), then the operation
+          mapping.respond_to?(:call) ? mapping.call(env) : nil
+        rescue StandardError
+          return json_response(403, 'access_denied', 'operation: the operation mapping failed (fail closed)',
+                               'failed_checks' => ['operation'])
+        end
+      result = AtlasPca.authorize(pcactn, operation: operation, audience: @audience, resolve_grant: @resolve_grant,
+                                          state_store: opts.state_store, is_revoked: opts.is_revoked, now: current_now,
+                                          plan: opts.plan, context: opts.context, intent_policy: @intent_policy,
+                                          intent_v2: @intent_v2, require: opts.require,
+                                          escalation_principals: opts.escalation_principals,
+                                          escalation_answer: escalation_answer(env, opts))
+      unless result.allow
+        extra = { 'failed_checks' => result.failed_checks, 'decision' => result.decision }
+        extra['escalation'] = result.escalation unless result.escalation.nil?
+        extra['missing'] = result.missing unless result.missing.nil?
+        reason = result.reason || 'denied'
+        return json_response(401, 'invalid_pcactn', reason, extra) if result.status == 401
+
+        return json_response(403, 'access_denied', reason, extra)
+      end
+
+      env['pca'] = { 'verdict' => result.verdict, 'pcactn' => result.pcactn, 'authorization' => result,
+                     'operation' => result.operation }
+      @app.call(env)
+    end
+
+    # The principal's EscalationAnswer: header PCA-Escalation-Answer (strict unpadded base64url of the JSON), else the body
+    # member `escalation_answer`. nil when none is pinned, absent or unreadable (an unreadable answer is no answer).
+    def escalation_answer(env, opts)
+      return nil if opts.escalation_principals.nil? || opts.escalation_principals.empty?
+
+      raw = env[ESCALATION_HEADER]
+      return strict_object(AtlasPca.decode_pca_header(raw) || '') unless raw.nil? || raw.empty?
+
+      input = env['rack.input']
+      body = input.nil? ? nil : read_rewind(input)
+      return nil if body.nil? || body.empty?
+
+      env_obj = AtlasPca.parse_json(body.dup.force_encoding('UTF-8'))
+      env_obj.is_a?(Hash) ? env_obj['escalation_answer'] : nil
+    rescue StandardError
+      nil
+    end
 
     # Returns the parsed PCActn Hash, nil if none presented, or raises DecodeError if what was
     # presented cannot be decoded. Header wins over body.
@@ -205,6 +298,8 @@ module AtlasPca
         rendered =
           if v.is_a?(Array)
             "[#{v.map { |s| jstr(s) }.join(',')}]"
+          elsif v.is_a?(Hash)
+            AtlasPca.canonicalize(v)
           else
             jstr(v)
           end

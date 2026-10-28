@@ -6,7 +6,10 @@ require 'stringio'
 module MutationKill
   module RackT
     module_function
-    def mw = AtlasPca::RackMiddleware
+    SigOnly = Class.new(AtlasPca::RackMiddleware) do
+      def initialize(app, **o) = super(app, signature_only: true, **o)
+    end
+    def mw = SigOnly
     def vec = (@vec ||= Corpus.core['vectors'].find { |v| v['expect']['allow'] == true && (v['requires'].nil? || v['requires'].empty? || v['requires'] == 'ed25519') && v.key?('pcactn') })
     def pa = vec['pcactn']
     def grant = vec['grant']
@@ -134,7 +137,11 @@ module MutationKill
       return 'www' unless m.send(:www_authenticate, 'x') == 'PCA realm="pca", error="x"'
       return 'realm' unless mw::REALM == 'pca' && mw::DEFAULT_HEADER == 'HTTP_PCA_ACTION'
       r = m.send(:json_response, 418, 'e', 'd', 'k' => ['v'])
-      return 'json_response' unless r == [418, { 'WWW-Authenticate' => 'PCA realm="pca", error="e"', 'content-type' => 'application/json' }, ['{"error":"e","error_description":"d","k":["v"]}']]
+      return 'json_response' unless r == [418, { 'content-type' => 'application/json' }, ['{"error":"e","error_description":"d","k":["v"]}']]
+      [401, 403].each do |st|
+        c = m.send(:json_response, st, 'e', 'd')
+        return "challenge #{st}" unless c == [st, { 'WWW-Authenticate' => 'PCA realm="pca", error="e"', 'content-type' => 'application/json' }, ['{"error":"e","error_description":"d"}']]
+      end
       nil
     end
   end

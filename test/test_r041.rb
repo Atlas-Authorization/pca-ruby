@@ -134,7 +134,7 @@ grant = vector['grant']
 canon = AtlasPca.b64e(vector['pcactn_json'].b)
 resolver = ->(ref) { ref == pcactn['grant_ref'] ? grant : nil }
 app = ->(_env) { [200, {}, ['ok']] }
-mw = AtlasPca::RackMiddleware.new(app, audience: vector['context']['aud'], resolve_grant: resolver, now: vector['context']['now'])
+mw = AtlasPca::RackMiddleware.new(app, audience: vector['context']['aud'], resolve_grant: resolver, now: vector['context']['now'], signature_only: true)
 env = ->(h) { { 'HTTP_PCA_ACTION' => h, 'rack.input' => StringIO.new('') } }
 check(mw.call(env.call(canon))[0] == 200, 'canonical header verifies')
 lenient = [

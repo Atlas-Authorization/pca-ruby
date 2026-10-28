@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Full adversarial corpus from the flagship
         shell: bash
-        run: .github/scripts/fetch-flagship-corpus.sh $([ "$RUNNER_OS" = Windows ] || echo --less)
+        run: .github/scripts/fetch-flagship-corpus.sh --layout $([ "$RUNNER_OS" = Windows ] || echo --less)
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
@@ -45,6 +45,150 @@ jobs:
         run: ruby conformance.rb
       - name: Rack middleware
         run: ruby -Ilib -Itest test/test_middleware.rb
+      - name: Rack middleware options (approved_goal, revocation_staleness, require_assurance, plans, executor)
+        run: ruby -Ilib -Itest test/test_middleware_options.rb
+      - name: Decision, rules 20-21 and escalation answers (shared decision-vectors.json; a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/decision-vectors.json || test -s packages/pca/conformance/decision-vectors.json
+          ruby -Ilib test/test_decision.rb
+      - name: Caveat language v2 (shared caveat-lang-vectors.json; a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/caveat-lang-vectors.json || test -s packages/pca/conformance/caveat-lang-vectors.json
+          ruby -Ilib test/test_caveat_lang.rb
+      - name: Forbid-wins certificate and linked policy template vectors (a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/forbid-certificate-vectors.json || test -s packages/pca/conformance/forbid-certificate-vectors.json
+          test -s conformance/policy-link-vectors.json || test -s packages/pca/conformance/policy-link-vectors.json
+          ruby -Ilib test/test_forbid_certificate.rb
+          ruby -Ilib test/test_policy_link.rb
+      - name: Signed agent passport vectors (packages/pca/conformance/passport-vectors.json)
+        shell: bash
+        run: |
+          test -s conformance/passport-vectors.json || test -s packages/pca/conformance/passport-vectors.json
+          ruby -Ilib test/test_passport.rb
+      - name: Agent / issuer side (producer vectors byte for byte, round trips, ML-DSA hybrids; a missing file fails)
+        shell: bash
+        env:
+          PCA_REQUIRE_PQ: ${{ matrix.os == 'ubuntu-26.04' && '1' || '0' }} # OpenSSL 3.5: ML-DSA and SLH-DSA signing must work there
+        run: |
+          test -s conformance/producer-vectors.json || test -s packages/pca/conformance/producer-vectors.json
+          ruby -Ilib test/test_agent_producer.rb
+      - name: Optimistic-path and transparency-ledger vectors (a missing file fails, never skips)
+        shell: bash
+        run: |
+          for f in optimistic-vectors ledger-vectors; do test -s conformance/$f.json || test -s packages/pca/conformance/$f.json; done
+          ruby -Ilib test/test_ext_vectors.rb
+      - name: Intent-state vectors (accumulators, monitors, history windows, sequencer receipts; a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/intent-state-vectors.json || test -s packages/pca/conformance/intent-state-vectors.json
+          ruby -Ilib test/test_intent_state.rb
+      - name: Mesh proof vectors (a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/mesh-vectors.json || test -s packages/pca/conformance/mesh-vectors.json
+          ruby -Ilib test/test_mesh.rb
+      - name: Goal-to-decision vectors (packages/pca-conformance/vectors/goal from the flagship layout; a missing corpus fails)
+        run: ruby test/test_goal_vectors.rb
+      - name: NVIDIA SPDM version rule
+        run: ruby -Ilib test/test_nvidia_spdm_version.rb
+      - name: Goal binding v3 (approved_goal commitments, invalid digests, binding rules; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/goal-commit-vectors.json || test -s packages/pca/conformance/goal-commit-vectors.json
+          ruby -Ilib test/test_goal_commit_v3.rb
+      - name: Revocation staleness (T9; staleness-vectors.json, a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/staleness-vectors.json || test -s packages/pca/conformance/staleness-vectors.json
+          ruby -Ilib test/test_revocation_staleness.rb
+      - name: Optional sqlite3 gem (the durable-store tests run when it installs and skip when it does not)
+        shell: bash
+        continue-on-error: true
+        run: gem install sqlite3 --no-document
+      - name: Operation records (T3; operation-vectors.json scenarios, concurrency, durable store, executor; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/operation-vectors.json || test -s packages/pca/conformance/operation-vectors.json
+          ruby -Ilib test/test_operations.rb
+      - name: Plan lifecycle (T10; plan-vectors.json scenarios, concurrency, authorize plans:; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/plan-vectors.json || test -s packages/pca/conformance/plan-vectors.json
+          ruby -Ilib test/test_plan_lifecycle.rb
+      - name: Assurance labels and the high-assurance gate (T8 / B7; assurance-vectors.json, a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/assurance-vectors.json || test -s packages/pca/conformance/assurance-vectors.json
+          ruby -Ilib test/test_assurance_vectors.rb
+      - name: Step-up client for the principal device (RFC 8032 vectors, fake transport)
+        run: ruby -Ilib test/test_stepup.rb
+      - name: Store-conformance helper (passes the shipped stores, fails deliberately broken ones)
+        run: ruby -Ilib test/test_store_conformance.rb
+      - name: actions-vectors (action-kit, strict ActionDef parse, canonical digest, trait expansion, floor check, ActionSchema v2, pack proofs; a missing corpus fails)
+        shell: bash
+        run: |
+          test -d conformance/actions || test -d ../../packages/pca-conformance/vectors/actions
+          ruby -Ilib test/test_actions_vectors.rb
+      - name: Vendor attestation evidence vectors (AMD SEV-SNP, Intel TDX, Azure MAA, GCP, NVIDIA + strict X.509; the flagship generates the file; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/attestation-evidence-vectors.json || test -s packages/pca/conformance/attestation-evidence-vectors.json
+          ruby -Ilib test/test_attestation_vectors.rb
+      - name: Rules 20-21 end to end through authorize (model-rules-vectors.json; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/model-rules-vectors.json || test -s packages/pca/conformance/model-rules-vectors.json
+          ruby -Ilib test/test_model_rules.rb
+      - name: K3 operational artifacts (k3-vectors.json, covering policy bundles, decision log, list receipts and grant management; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/k3-vectors.json || test -s packages/pca/conformance/k3-vectors.json
+          ruby -Ilib test/test_k3_vectors.rb
+      - name: fresh_at consistency-token member (fresh-at-vectors.json; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/fresh-at-vectors.json || test -s packages/pca/conformance/fresh-at-vectors.json
+          ruby -Ilib test/test_fresh_at.rb
+      - name: pca_grant authorization-details type (pca-grant-vectors.json; a missing file fails)
+        shell: bash
+        run: |
+          test -s conformance/pca-grant-vectors.json || test -s packages/pca/conformance/pca-grant-vectors.json
+          ruby -Ilib test/test_pca_grant.rb
+          test -s conformance/blueprint-vectors.json || test -s packages/pca/conformance/blueprint-vectors.json
+          ruby -Ilib test/test_blueprint.rb
+          test -s conformance/k4-vectors.json || test -s packages/pca/conformance/k4-vectors.json
+          ruby -Ilib test/test_k4.rb
+          test -s conformance/a2a-vectors.json || test -s packages/pca/conformance/a2a-vectors.json
+          ruby -Ilib test/test_a2a.rb
+          test -s conformance/workflow-vectors.json || test -s packages/pca/conformance/workflow-vectors.json
+          test -s conformance/readside-vectors.json || test -s packages/pca/conformance/readside-vectors.json
+          ruby -Ilib test/test_k5.rb
+      - name: K5 vault, aggregate reads and workflow admission inside authorize (shared vectors; a missing file fails, never skips)
+        shell: bash
+        run: |
+          test -s conformance/vault-aggregate-vectors.json || test -s packages/pca/conformance/vault-aggregate-vectors.json
+          ruby -Ilib test/test_k5_vault.rb
+          test -s conformance/authorize-workflow-fixtures.json || test -s packages/pca/conformance/authorize-workflow-fixtures.json
+          ruby -Ilib test/test_authorize_workflow.rb
+          ruby -Ilib test/test_middleware_workflow.rb
+          test -s conformance/lease-vectors.json || test -s packages/pca/conformance/lease-vectors.json
+          ruby -Ilib test/test_lease.rb
+          test -s conformance/obligations-vectors.json || test -s packages/pca/conformance/obligations-vectors.json
+          ruby -Ilib test/test_obligations.rb
+          test -s conformance/break-glass-vectors.json || test -s packages/pca/conformance/break-glass-vectors.json
+          ruby -Ilib test/test_break_glass.rb
+          test -s conformance/missing-context-vectors.json || test -s packages/pca/conformance/missing-context-vectors.json
+          ruby -Ilib test/test_missing_context.rb
+          test -s conformance/policy-classes-vectors.json || test -s packages/pca/conformance/policy-classes-vectors.json
+          ruby -Ilib test/test_policy_classes.rb
+          test -s conformance/provenance-vectors.json || test -s packages/pca/conformance/provenance-vectors.json
+          ruby -Ilib test/test_provenance.rb
+          test -s conformance/sigstore-vectors.json || test -s packages/pca/conformance/sigstore-vectors.json
+          ruby -Ilib test/test_sigstore_bundle.rb
       - name: 0.4.1 suite
         run: ruby -Ilib test/test_r041.rb
       - name: Mutation-kill registry

@@ -45,7 +45,10 @@ module MutationKill
       [wire(x), wire(root)]
     end
 
-    def mw = AtlasPca::RackMiddleware
+    SigOnlyMw = Class.new(AtlasPca::RackMiddleware) do
+      def initialize(app, **o) = super(app, signature_only: true, **o)
+    end
+    def mw = SigOnlyMw
 
     def rack
       pa, grant = fresh

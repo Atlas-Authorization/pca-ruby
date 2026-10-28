@@ -184,7 +184,7 @@ module MutationKill
     pc = AtlasPca.parse_json(v['pcactn_json'])
     grant = v['grant']
     mw = AtlasPca::RackMiddleware.new(->(_e) { [200, {}, ['ok']] }, audience: v['context']['aud'],
-                                                                    resolve_grant: ->(r) { r == pc['grant_ref'] ? grant : nil }, now: v['context']['now'])
+                                                                    resolve_grant: ->(r) { r == pc['grant_ref'] ? grant : nil }, now: v['context']['now'], signature_only: true)
     env = ->(h) { { 'HTTP_PCA_ACTION' => h, 'rack.input' => StringIO.new('') } }
     canon = Base64.urlsafe_encode64(v['pcactn_json'].b, padding: false)
     lenient = [canon + ('=' * ((4 - (canon.length % 4)) % 4)), canon.tr('-_', '+/'), Base64.strict_encode64(v['pcactn_json'].b),

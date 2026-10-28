@@ -3,7 +3,7 @@ name: Mutation
 # Mutation testing of the verifier library, every file of lib/ (atlas_pca.rb and the lib/atlas_pca/* extensions it
 # require_relative's), with the AST mutator in the flagship (tools/pca-audit/ruby-mutate; oracle = the kill tests +
 # core/adversarial corpus + every conformance table + the reason snapshot; a mutant of an extension file is evaluated with
-# the library and every other extension re-loaded). 98 shards: the large files are split by mutant id (slice k of m = ids
+# the library and every other extension re-loaded). 115 shards: the large files are split by mutant id (slice k of m = ids
 # with id % m == k - 1), the three small files share one shard; the plan check fails when lib/ gains a file the matrix does
 # not list. The merge job checks the survivors against the equivalent-mutant ledger: it passes when every survivor is a
 # ledgered equivalent and no ledger entry is stale. Runs on demand and on ci/** branches (the release-candidate check),
@@ -50,15 +50,23 @@ concurrency:
 
 env:
   CRATE: ruby-pca
-  SHARDS: '98'
-  # every file of lib/, as listed in the matrix below (checked by the shard step)
+  SHARDS: '115'
+  # every file of lib/ the oracle loads, as listed in the matrix below (checked by the shard step). The attestation verifiers
+  # (lib/atlas_pca/attest*) are opt-in and not required by atlas_pca.rb, so the oracle never loads them: they are not mutated here.
   PLAN_FILES: >-
     lib/atlas_pca.rb lib/atlas_pca/intent_v2.rb lib/atlas_pca/intent_wb.rb lib/atlas_pca/predicates.rb
     lib/atlas_pca/safe_regex.rb lib/atlas_pca/rack_middleware.rb lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb
+    lib/atlas_pca/authorize.rb lib/atlas_pca/operations.rb lib/atlas_pca/atomic_kv.rb lib/atlas_pca/plan_lifecycle.rb
+    lib/atlas_pca/revocation_staleness.rb lib/atlas_pca/assurance.rb lib/atlas_pca/stepup.rb lib/atlas_pca/store_conformance.rb
+    lib/atlas_pca/decision.rb lib/atlas_pca/mesh.rb lib/atlas_pca/escalation.rb lib/atlas_pca/passport.rb lib/atlas_pca/optimistic.rb
+    lib/atlas_pca/ledger.rb lib/atlas_pca/intent_history.rb lib/atlas_pca/agent.rb
+    lib/atlas_pca/actions.rb lib/atlas_pca/actions_registry.rb lib/atlas_pca/caveat_lang.rb lib/atlas_pca/forbid_certificate.rb
+    lib/atlas_pca/policy_link.rb lib/atlas_pca/fresh_at.rb lib/atlas_pca/k3.rb lib/atlas_pca/pca_grant.rb lib/atlas_pca/blueprint.rb lib/atlas_pca/a2a.rb lib/atlas_pca/workflow.rb lib/atlas_pca/readside.rb lib/atlas_pca/read_vault.rb
+    lib/atlas_pca/policy_link.rb lib/atlas_pca/fresh_at.rb lib/atlas_pca/k3.rb lib/atlas_pca/pca_grant.rb lib/atlas_pca/blueprint.rb lib/atlas_pca/a2a.rb lib/atlas_pca/lease.rb lib/atlas_pca/obligations.rb lib/atlas_pca/break_glass.rb lib/atlas_pca/missing_context.rb lib/atlas_pca/policy_classes.rb
 
 jobs:
   shard:
-    name: shard ${{ matrix.shard }}/98 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
+    name: shard ${{ matrix.shard }}/115 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
     # the ubuntu-26.04 userland (OpenSSL 3.5: ML-DSA / SLH-DSA) in a container on the general runner pool: the
     # ubuntu-26.04 hosted image has a much smaller concurrency pool (~14 jobs where the plan allows 60)
     runs-on: ubuntu-latest
@@ -173,6 +181,24 @@ jobs:
           - { shard: 96, files: lib/atlas_pca/safe_regex.rb, slice: 5, of: 6 }
           - { shard: 97, files: lib/atlas_pca/safe_regex.rb, slice: 6, of: 6 }
           - { shard: 98, files: 'lib/atlas_pca/rack_middleware.rb lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb', slice: 1, of: 1 }
+          - { shard: 99, files: lib/atlas_pca/authorize.rb, slice: 1, of: 3 }
+          - { shard: 100, files: lib/atlas_pca/authorize.rb, slice: 2, of: 3 }
+          - { shard: 101, files: lib/atlas_pca/authorize.rb, slice: 3, of: 3 }
+          - { shard: 102, files: 'lib/atlas_pca/operations.rb lib/atlas_pca/atomic_kv.rb', slice: 1, of: 1 }
+          - { shard: 103, files: 'lib/atlas_pca/plan_lifecycle.rb lib/atlas_pca/revocation_staleness.rb', slice: 1, of: 1 }
+          - { shard: 104, files: 'lib/atlas_pca/assurance.rb lib/atlas_pca/stepup.rb', slice: 1, of: 1 }
+          - { shard: 105, files: 'lib/atlas_pca/store_conformance.rb lib/atlas_pca/decision.rb', slice: 1, of: 1 }
+          - { shard: 106, files: lib/atlas_pca/mesh.rb, slice: 1, of: 1 }
+          - { shard: 107, files: 'lib/atlas_pca/escalation.rb lib/atlas_pca/passport.rb lib/atlas_pca/optimistic.rb', slice: 1, of: 1 }
+          - { shard: 108, files: 'lib/atlas_pca/ledger.rb lib/atlas_pca/intent_history.rb', slice: 1, of: 1 }
+          - { shard: 109, files: lib/atlas_pca/actions.rb, slice: 1, of: 3 }
+          - { shard: 110, files: lib/atlas_pca/actions.rb, slice: 2, of: 3 }
+          - { shard: 111, files: lib/atlas_pca/actions.rb, slice: 3, of: 3 }
+          - { shard: 112, files: lib/atlas_pca/actions_registry.rb, slice: 1, of: 1 }
+          - { shard: 113, files: 'lib/atlas_pca/caveat_lang.rb lib/atlas_pca/forbid_certificate.rb lib/atlas_pca/policy_link.rb', slice: 1, of: 1 }
+          - { shard: 114, files: 'lib/atlas_pca/fresh_at.rb lib/atlas_pca/k3.rb lib/atlas_pca/pca_grant.rb lib/atlas_pca/blueprint.rb lib/atlas_pca/a2a.rb lib/atlas_pca/workflow.rb lib/atlas_pca/readside.rb lib/atlas_pca/read_vault.rb', slice: 1, of: 1 }
+          - { shard: 114, files: 'lib/atlas_pca/fresh_at.rb lib/atlas_pca/k3.rb lib/atlas_pca/pca_grant.rb lib/atlas_pca/blueprint.rb lib/atlas_pca/a2a.rb lib/atlas_pca/lease.rb lib/atlas_pca/obligations.rb lib/atlas_pca/break_glass.rb lib/atlas_pca/missing_context.rb lib/atlas_pca/policy_classes.rb', slice: 1, of: 1 }
+          - { shard: 115, files: lib/atlas_pca/agent.rb, slice: 1, of: 1 }
     steps:
       - name: Container toolchain (git, cc for libatlas_less and the FFI stub tests, gh for the baseline download)
         run: |
@@ -182,7 +208,7 @@ jobs:
           git config --global --add safe.directory '*'
       - uses: actions/checkout@v4
       - name: Every file of lib/ is in the plan
-        run: diff <(find lib -name '*.rb' | sort) <(tr ' ' '\n' <<<"$PLAN_FILES" | grep . | sort)
+        run: diff <(find lib -name '*.rb' -not -path 'lib/atlas_pca/attest*' | sort) <(tr ' ' '\n' <<<"$PLAN_FILES" | grep . | sort)
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'

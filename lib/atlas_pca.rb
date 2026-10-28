@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Reference verifier for the CORE PCActn checks (wire format v2): strict wire form, freshness binding,
-# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter.
+# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter_format.
 # Stdlib only (OpenSSL >= 3 for the raw Ed25519 equation; torsion / small-order / canonicality are checked here).
 # Normative spec: packages/pca/conformance/README.md.
 require 'digest'
@@ -28,11 +28,12 @@ module AtlasPca
   MAX_LIFETIME_MS = 3_600_000
   MAX_SKEW_MS = 60_000
   MAX_SAFE = (2**53) - 1
-  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
   class Malformed < StandardError; end
 
-  Verdict = Struct.new(:allow, :checks, :reason)
+  # `reasons` lists every failing check's reason in pipeline order (nil: only `reason`); `degraded` names a rule that passed degraded.
+  Verdict = Struct.new(:allow, :checks, :reason, :reasons, :degraded)
 
   module_function
 
@@ -1229,7 +1230,7 @@ module AtlasPca
   TOP_REQUIRED = %w[ver action grant_ref cap_chain plan attestation provenance freshness counter risk_claim
                     aud iat exp sig].freeze
   TOP_OPTIONAL = %w[nonce caution rationale_commitment progress_step prohibition_evidence tool_binding
-                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session].freeze
+                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session fresh_at].freeze
   ACTION_KEYS = %w[verb resource params_digest reversibility_class].freeze
   PLAN_REQUIRED = %w[root inclusion_proof node_id].freeze
   PROOF_KEYS = %w[index size path].freeze
@@ -1288,6 +1289,9 @@ module AtlasPca
     return false if p.key?('intent') && !intent_wire_error(p['intent']).nil?
     # Intent Layer v2 (SIGNED): the `intent_session` member, when present, passes rule 13's closed wire shape.
     return false if p.key?('intent_session') && !validate_intent_session_wire(p['intent_session']).nil?
+
+    # Consistency token (SIGNED): the `fresh_at` member, when present, passes its closed wire shape (fresh_at.rb).
+    return false if p.key?('fresh_at') && !validate_fresh_at_wire(p['fresh_at']).nil?
 
     th = p['threshold']
     return true unless p.key?('threshold')
@@ -1522,6 +1526,8 @@ module AtlasPca
   INTENT_GOAL_V2_PREFIX = 'pca-intent:v2:'
   # Intent Layer v2 session grants over a COMMITTED map (rule 19): `pca-intent:v2c:<session>:<map_commit>`.
   INTENT_GOAL_V2C_PREFIX = 'pca-intent:v2c:'
+  # Goal binding v3: `pca-intent:v3:<goal_digest>:<policy_digest>` (the signed Goal IR plus the compiled policy).
+  INTENT_GOAL_V3_PREFIX = 'pca-intent:v3:'
   INTENT_GOAL_COMMIT_DOMAIN = "atlas-pca/goal/v1\x00"
   PPM_ONE = 1_000_000
   MAX_INTENT_GOAL_SALT_LEN = 128
@@ -1569,15 +1575,38 @@ module AtlasPca
     hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => goal, 'salt' => goal_salt })
   end
 
+  # A well-formed `approved_goal`: a closed object of exactly `goal_digest` and `policy_digest`, both canonical
+  # base64url of 32 bytes (String or Symbol keys).
+  def approved_goal_ref?(v)
+    return false unless v.is_a?(Hash) && v.length == 2
+
+    r = v.transform_keys(&:to_s)
+    r.length == 2 && b32?(r['goal_digest']) && b32?(r['policy_digest'])
+  end
+
+  # The goal v3 string. Raises ArgumentError on a malformed digest: never commit to garbage.
+  def intent_goal_v3(ref)
+    raise ArgumentError, 'intent_goal_v3: goal_digest and policy_digest must be canonical base64url (32 bytes)' unless approved_goal_ref?(ref)
+
+    r = ref.transform_keys(&:to_s)
+    "#{INTENT_GOAL_V3_PREFIX}#{r['goal_digest']}:#{r['policy_digest']}"
+  end
+
+  # The goal v3 commitment for a salt (same domain and hash as intent_goal_commit).
+  def intent_goal_commit_v3(ref, goal_salt)
+    hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => intent_goal_v3(ref), 'salt' => goal_salt })
+  end
+
   # A policy Hash with String keys (Symbol keys are accepted too), or nil when `policy` is not a Hash.
   def normalize_intent_policy(policy)
     policy.is_a?(Hash) ? policy.transform_keys(&:to_s) : nil
   end
 
-  # True iff the policy is active: `require` is exactly true, or either threshold key is present.
+  # True iff the policy is active: `require` is exactly true, or a threshold key or `approved_goal` is present.
   def intent_policy_active?(policy)
     pol = normalize_intent_policy(policy)
-    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm'))
+    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm') ||
+                  pol.key?('approved_goal'))
   end
 
   # RAW JSON TEXT as the platform JSON parser of the reference reads it (conformance README "Raw JSON text members":
@@ -1626,11 +1655,19 @@ module AtlasPca
     if (pol.key?('min_fidelity_ppm') && lo.nil?) || (pol.key?('max_residual_risk_ppm') && hi.nil?)
       return [:fail, 'intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)']
     end
+    v3 = pol.key?('approved_goal')
+    if v3 && !approved_goal_ref?(pol['approved_goal'])
+      return [:fail, 'intent policy misconfigured: approved_goal digests must be canonical base64url (32 bytes) (fail closed)']
+    end
     return [:fail, 'this verifier requires an intent binding but the PCActn carries none'] if intent.nil?
 
     commit = root_goal_commit(grant)
     return [:fail, 'the root grant carries no envelope goal commitment to bind the intent to'] if commit.nil?
-    if intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
+    if v3
+      if intent_goal_commit_v3(pol['approved_goal'], intent['goal_salt']) != commit
+        return [:fail, "the root grant's goal commitment does not open to the approved goal and compiled policy (v3)"]
+      end
+    elsif intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
       return [:fail, "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"]
     end
     if lo && intent['fidelity_ppm'] < lo
@@ -1662,15 +1699,15 @@ module AtlasPca
   # proofs}}, layers, acc {state, monitors, receipts, last_seq, sequencer_keys}, wb {artifacts, policy}. The v2 checks
   # (schema, intent_session, layers, accumulators, facts, provenance, classes; see decide_intent_v2) follow `intent`, each
   # reported only when the PCActn carries `intent_session` or a v2 policy is active; allow requires all reported ones.
-  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil, fresh_at: nil)
     verify_pcactn_unchecked(pcactn, grant, now: now, audience: audience, allowed_suites: allowed_suites,
-                                           intent_policy: intent_policy, intent_v2: intent_v2)
+                                           intent_policy: intent_policy, intent_v2: intent_v2, fresh_at: fresh_at)
   rescue StandardError => e
     # TOTAL (R6-05): a residual fault on hostile input is a terminal wire refusal, never an exception.
     Verdict.new(false, { 'wire' => false }, "wire: malformed input (#{e.class})")
   end
 
-  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil, fresh_at: nil)
     if pcactn.is_a?(String)
       # FIRST: before any parsing (String#bytesize is the raw byte length)
       return Verdict.new(false, { 'wire' => false }, "wire: #{ARTIFACT_SIZE_REASON}") if pcactn.bytesize > MAX_ARTIFACT_BYTES
@@ -1745,7 +1782,7 @@ module AtlasPca
       end
     end
 
-    run.call('counter', 'not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
+    run.call('counter_format', 'missing or not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
 
     # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
     # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
@@ -1761,11 +1798,18 @@ module AtlasPca
     end
     # Intent Layer v2: schema (14), intent_session (13), layers (V5), accumulators (15), facts / provenance / classes
     # (16-18), each reported only when the PCActn carries `intent_session` or a v2 policy is active.
-    decide_intent_v2(pcactn, grant, intent_v2, now)['checks'].each do |c|
+    v2 = decide_intent_v2(pcactn, grant, intent_v2, now)
+    # Consistency token: `fresh_at`, after the intent checks; reported only when the PCActn carries the member, a side-carried
+    # token is read, or the policy requires one (otherwise absent: byte-identical to before).
+    fa = decide_fresh_at(pcactn, fresh_at, now)
+    v2_checks = fa.nil? ? v2['checks'] : v2['checks'] + [fa]
+    all_reasons = fold_escalation(reason.empty? ? [] : [reason], v2_checks, {})['reasons']
+    v2_checks.each do |c|
       ordered[c['name']] = c['ok'] ? true : false
       reason = "#{c['name']}: #{c['reason'] || 'rejected'}" if !c['ok'] && reason.empty?
     end
-    Verdict.new(ordered.values.all?, ordered, reason)
+    degraded = v2['legacy_model_polarity'] ? { 'tighten' => "model_polarity 'legacy': a grant reads a model-derived value in where (rule 21)" } : nil
+    Verdict.new(ordered.values.all?, ordered, reason, all_reasons, degraded)
   end
 end
 
@@ -1777,3 +1821,42 @@ require_relative 'atlas_pca/predicates'
 require_relative 'atlas_pca/intent_layers'
 require_relative 'atlas_pca/intent_wb'
 require_relative 'atlas_pca/intent_v2'
+require_relative 'atlas_pca/actions'
+require_relative 'atlas_pca/actions_registry'
+# 0.5: the ternary decision, escalation answers and the full authorize() pipeline (opt-in; verify_pcactn is unchanged).
+require_relative 'atlas_pca/decision'
+require_relative 'atlas_pca/forbid_certificate'
+require_relative 'atlas_pca/policy_link'
+require_relative 'atlas_pca/fresh_at'
+require_relative 'atlas_pca/pca_grant'
+require_relative 'atlas_pca/blueprint'
+require_relative 'atlas_pca/k4'
+require_relative 'atlas_pca/runtime_claim'
+require_relative 'atlas_pca/a2a'
+require_relative 'atlas_pca/workflow'
+require_relative 'atlas_pca/readside'
+require_relative 'atlas_pca/read_vault'
+require_relative 'atlas_pca/lease'
+require_relative 'atlas_pca/break_glass'
+require_relative 'atlas_pca/missing_context'
+require_relative 'atlas_pca/policy_classes'
+require_relative 'atlas_pca/obligations'
+require_relative 'atlas_pca/k3'
+require_relative 'atlas_pca/escalation'
+require_relative 'atlas_pca/approval'
+require_relative 'atlas_pca/passport'
+require_relative 'atlas_pca/ledger'
+require_relative 'atlas_pca/optimistic'
+require_relative 'atlas_pca/intent_history'
+require_relative 'atlas_pca/mesh'
+require_relative 'atlas_pca/revocation_staleness'
+require_relative 'atlas_pca/assurance'
+require_relative 'atlas_pca/authorize'
+require_relative 'atlas_pca/atomic_kv'
+require_relative 'atlas_pca/plan_lifecycle'
+require_relative 'atlas_pca/operations'
+require_relative 'atlas_pca/stepup'
+require_relative 'atlas_pca/store_conformance'
+require_relative 'atlas_pca/caveat_lang'
+require_relative 'atlas_pca/provenance_gate'
+require_relative 'atlas_pca/agent'

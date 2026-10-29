@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+gem 'atlas-pca', path: '../..'
+# Rack 2.2: rackup's development mode lints headers and rejects the mixed-case WWW-Authenticate challenge.
+gem 'rack', '~> 2.2'
+gem 'webrick'
+gem 'base64'
+
+group :test do
+  gem 'minitest'
+  gem 'rack-test'
+end

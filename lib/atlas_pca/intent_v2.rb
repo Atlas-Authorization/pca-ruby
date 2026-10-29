@@ -250,30 +250,44 @@ module AtlasPca
     SENSITIVITIES = %w[free material critical].freeze
     SCHEMA_REVERSIBILITY = %w[reversible rate_limited irreversible].freeze
     PARAM_TYPES = %w[string integer boolean date set array].freeze
+    PARAM_TYPES_V2 = (PARAM_TYPES + %w[datetime duration object_ref]).freeze
+    SCHEMA_V2_EFFECTS = %w[read create update delete send pay exec privilege export publish provision sign].freeze
+    SCHEMA_V2_CAVEATS = %w[amount_cap count_cap window resource_scope recipient_scope approval_ref short_expiry rate_cap].freeze
+    SCHEMA_V2_PRULES = %w[array_bounded export_bounded id_not_wildcard money_amount_bounded money_has_currency pay_has_idempotency
+                          recipient_param_declared secret_not_logged].freeze
+    SCHEMA_V2_CONTEXT = %w[approval_ref dry_run_first fresh_revocation idempotency revocable sandbox_attested].freeze
+    SCHEMA_V2_TAGS = %w[pii phi pci secret credential free_text_outbound code path sql].freeze
+    SCHEMA_V2_PROVENANCE = %w[first_party tool agent].freeze
+    TRAIT_ID_RE = /\A[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}\z/
+    TAINT_CTX_RE = /\Asession_taint_max:[a-z_]{1,16}\z/
     MAX_SCHEMA_VERBS = 256
     MAX_SCHEMA_PARAMS = 64
     MAX_SCHEMA_VALUES = 256
     DEFAULT_MAX_LEN = 1024
     DEFAULT_MAX_ITEMS = 64
     PARAM_PATH_RE = /\Aaction\.params\.[A-Za-z0-9_]{1,64}\z/
+    PARAM_PATH_RE_V2 = /\Aaction\.params\.[A-Za-z0-9_]{1,64}(?:\.[A-Za-z0-9_]{1,64}){0,2}\z/
     UNIT_ID_RE = /\A[a-z0-9_]+(?:\.[a-z0-9_]+)*\z/
     PARAMS_PREFIX_LEN = 14 # 'action.params.'.length
     DOC_KEYS = %w[v kind site aud version units state verbs sig].freeze
     VERB_KEYS = %w[verb kind params reversibility reversibility_by mcp openapi harm world effects returns description].freeze
     PARAM_KEYS = %w[type semantic sensitivity required values min max unit max_len items min_items max_items default
                     principal_neutral_default accumulates_into issued_by_site description].freeze
+    DOC_KEYS_V2 = (DOC_KEYS + %w[traits_digest trait_defs pack]).freeze
+    VERB_KEYS_V2 = (VERB_KEYS + %w[traits def floors confirmation]).freeze
+    PARAM_KEYS_V2 = (PARAM_KEYS + %w[role format tags provenance_min]).freeze
     SIG_KEYS = %w[alg kid value pq_value].freeze
 
-    def param_decl_error(path, d, units)
-      return "parameter path '#{path}' is not action.params.<name>" unless rx?(PARAM_PATH_RE, path)
-      if RESERVED_NAMES.include?(slice_from(path, PARAMS_PREFIX_LEN))
+    def param_decl_error(path, d, units, v2 = false)
+      return "parameter path '#{path}' is not action.params.<name>" unless rx?(v2 ? PARAM_PATH_RE_V2 : PARAM_PATH_RE, path)
+      if slice_from(path, PARAMS_PREFIX_LEN).split('.').any? { |seg| RESERVED_NAMES.include?(seg) }
         return "parameter name '#{path}' is reserved (__proto__ / constructor / prototype)"
       end
       return "#{path}: declaration must be an object" unless d.is_a?(Hash)
 
-      js_keys(d).each { |k| return "#{path}: unknown member '#{k}'" unless PARAM_KEYS.include?(k) }
+      js_keys(d).each { |k| return "#{path}: unknown member '#{k}'" unless (v2 ? PARAM_KEYS_V2 : PARAM_KEYS).include?(k) }
       t = d['type']
-      return "#{path}: unknown type" unless in_strs?(t, PARAM_TYPES)
+      return "#{path}: unknown type" unless in_strs?(t, v2 ? PARAM_TYPES_V2 : PARAM_TYPES)
       return "#{path}: semantic must be a non-empty string" unless is_str?(d['semantic'], 128)
       return "#{path}: unknown sensitivity" unless in_strs?(d['sensitivity'], SENSITIVITIES)
       return "#{path}: required must be a boolean" if d.key?('required') && !bool?(d['required'])
@@ -290,7 +304,7 @@ module AtlasPca
 
       %w[min max].each do |k|
         next unless d.key?(k)
-        if !int?(d[k]) || (t != 'integer' && !(t == 'array' && strict_eq(prop(d, 'items'), 'integer')))
+        if !int?(d[k]) || (t != 'integer' && !(v2 && t == 'duration') && !(t == 'array' && strict_eq(prop(d, 'items'), 'integer')))
           return "#{path}: #{k} must be a safe integer on an integer parameter"
         end
       end
@@ -323,13 +337,77 @@ module AtlasPca
       return "#{path}: issued_by_site must be a boolean" if d.key?('issued_by_site') && !bool?(d['issued_by_site'])
       return "#{path}: description must be a string" if d.key?('description') && !is_str?(d['description'], 1024)
 
+      if v2
+        return "#{path}: role must be a non-empty string" if d.key?('role') && !is_str?(d['role'], 128)
+        if d.key?('format') && (!d['format'].is_a?(String) || format_check(d['format']).nil? || (t != 'string' && t != 'object_ref'))
+          return "#{path}: format must be a known format on a string parameter"
+        end
+        if d.key?('tags')
+          tg = d['tags']
+          unless tg.is_a?(Array) && tg.length <= SCHEMA_V2_TAGS.length && tg.all? { |x| in_strs?(x, SCHEMA_V2_TAGS) } && distinct_strs?(tg)
+            return "#{path}: tags must be distinct known tags"
+          end
+        end
+        if d.key?('provenance_min') && !in_strs?(d['provenance_min'], SCHEMA_V2_PROVENANCE)
+          return "#{path}: unknown provenance_min"
+        end
+      end
       nil
     end
 
-    def verb_decl_error(v, units)
+    # Null if `f` is a well-formed materialized profile (shape only; the semantic check is rule 22).
+    def schema_floors_error(f)
+      return 'floors must be an object' unless f.is_a?(Hash)
+
+      js_keys(f).each { |k| return "floors: unknown member '#{k}'" unless %w[risk rev blast_ppm esc caveats context prules].include?(k) }
+      rng = ->(x, lo, hi) { int?(x) && x >= lo && x <= hi }
+      return 'floors.risk and floors.esc must be integers in 0..3' unless rng.call(f['risk'], 0, 3) && rng.call(f['esc'], 0, 3)
+      return 'floors.rev is not a reversibility class' unless in_strs?(f['rev'], SCHEMA_REVERSIBILITY)
+      return 'floors.blast_ppm must be an integer in 0..1000000' unless rng.call(f['blast_ppm'], 0, 1_000_000)
+
+      { 'caveats' => ->(x) { SCHEMA_V2_CAVEATS.include?(x) },
+        'context' => ->(x) { SCHEMA_V2_CONTEXT.include?(x) || rx?(TAINT_CTX_RE, x) },
+        'prules' => ->(x) { SCHEMA_V2_PRULES.include?(x) } }.each do |name, ok|
+        a = f[name]
+        return "floors.#{name} must be an array of known entries" unless a.is_a?(Array) && a.length <= 64 && a.all? { |x| x.is_a?(String) && ok.call(x) }
+
+        (1...a.length).each { |i| return "floors.#{name} must be sorted and distinct" unless (a[i - 1].b <=> a[i].b) < 0 }
+      end
+      nil
+    end
+
+    CONFIRMATION_KEYS = %w[def_digest traits_digest facts_digest final_traits dismissed reviewer_kid ts sig].freeze
+
+    # Shape only; the signature and the pinned key are rule 22 (actions.rb).
+    def confirmation_shape_error(c)
+      return 'confirmation must be an object' unless c.is_a?(Hash)
+
+      js_keys(c).each { |k| return "confirmation: unknown member '#{k}'" unless CONFIRMATION_KEYS.include?(k) }
+      return 'confirmation: def_digest, traits_digest and facts_digest must be canonical base64url SHA-256 digests' if b64d(c['def_digest'], 32).nil? || b64d(c['traits_digest'], 32).nil? || b64d(c['facts_digest'], 32).nil?
+      return 'confirmation: sig must be a canonical base64url 64-byte signature' if b64d(c['sig'], 64).nil?
+
+      ft = c['final_traits']
+      return 'confirmation: final_traits must be trait ids' unless ft.is_a?(Array) && ft.length <= 64 && ft.all? { |x| rx?(TRAIT_ID_RE, x) }
+
+      (1...ft.length).each { |i| return 'confirmation: final_traits must be sorted and distinct' unless (ft[i - 1].b <=> ft[i].b) < 0 }
+      dm = c['dismissed']
+      return 'confirmation: dismissed must be an array' unless dm.is_a?(Array) && dm.length <= 64
+
+      dm.each do |d|
+        unless d.is_a?(Hash) && js_keys(d).all? { |k| %w[trait reason].include?(k) } && rx?(TRAIT_ID_RE, d['trait']) && is_str?(d['reason'], 256)
+          return 'confirmation: dismissed entries must be {trait, reason}'
+        end
+      end
+      return 'confirmation: reviewer_kid must be a non-empty string' unless is_str?(c['reviewer_kid'], 128)
+      return 'confirmation: ts must be a non-negative safe integer' unless nonneg?(c['ts'])
+
+      nil
+    end
+
+    def verb_decl_error(v, units, v2 = false)
       return 'verb entry must be an object' unless v.is_a?(Hash)
 
-      js_keys(v).each { |k| return "verb entry: unknown member '#{k}'" unless VERB_KEYS.include?(k) }
+      js_keys(v).each { |k| return "verb entry: unknown member '#{k}'" unless (v2 ? VERB_KEYS_V2 : VERB_KEYS).include?(k) }
       return 'verb entry: verb must be a non-empty string' unless is_str?(v['verb'], 128)
 
       at = "verb '#{v['verb']}'"
@@ -342,8 +420,11 @@ module AtlasPca
       return "#{at}: more than #{MAX_SCHEMA_PARAMS} parameters" if names.length > MAX_SCHEMA_PARAMS
 
       names.each do |p|
-        e = param_decl_error(p, params[p], units)
+        e = param_decl_error(p, params[p], units, v2)
         return "#{at}: #{e}" if e
+      end
+      if v2
+        names.each { |p| names.each { |q| return "#{at}: parameter '#{p}' is both a value and the parent of '#{q}'" if q != p && q.start_with?("#{p}.") } }
       end
       return "#{at}: unknown reversibility" if v.key?('reversibility') && !in_strs?(v['reversibility'], SCHEMA_REVERSIBILITY)
 
@@ -364,7 +445,29 @@ module AtlasPca
       if v.key?('openapi') && (!v['openapi'].is_a?(Hash) || js_keys(v['openapi']).join(',') != 'operationId' || !is_str?(v['openapi']['operationId'], 128))
         return "#{at}: openapi must be {operationId}"
       end
-      %w[harm effects returns].each { |k| return "#{at}: #{k} must be an object" if v.key?(k) && !v[k].is_a?(Hash) }
+      (v2 ? %w[harm returns] : %w[harm effects returns]).each { |k| return "#{at}: #{k} must be an object" if v.key?(k) && !v[k].is_a?(Hash) }
+      if v2
+        ef = v['effects']
+        unless ef.is_a?(Array) && !ef.empty? && ef.length <= SCHEMA_V2_EFFECTS.length && ef.all? { |x| in_strs?(x, SCHEMA_V2_EFFECTS) }
+          return "#{at}: effects must be 1..#{SCHEMA_V2_EFFECTS.length} known effects"
+        end
+        (1...ef.length).each { |i| return "#{at}: effects must be sorted and distinct" unless (ef[i - 1].b <=> ef[i].b) < 0 }
+        return "#{at}: kind read must hold exactly when every effect is read" if (v['kind'] == 'read') != ef.all? { |x| x == 'read' }
+
+        tr = v['traits']
+        return "#{at}: traits must be trait ids" unless tr.is_a?(Array) && tr.length <= 64 && tr.all? { |x| rx?(TRAIT_ID_RE, x) }
+
+        (1...tr.length).each { |i| return "#{at}: traits must be sorted and distinct" unless (tr[i - 1].b <=> tr[i].b) < 0 }
+        return "#{at}: def must be a canonical base64url SHA-256 digest" if b64d(v['def'], 32).nil?
+
+        fe = schema_floors_error(v['floors'])
+        return "#{at}: #{fe}" if fe
+
+        if v.key?('confirmation')
+          ce = confirmation_shape_error(v['confirmation'])
+          return "#{at}: #{ce}" if ce
+        end
+      end
       return "#{at}: world must be an array" if v.key?('world') && !v['world'].is_a?(Array)
       return "#{at}: description must be a string" if v.key?('description') && !is_str?(v['description'], 1024)
 
@@ -375,8 +478,9 @@ module AtlasPca
     def action_schema_shape_error(doc, signed = true)
       return 'schema is not an object' unless doc.is_a?(Hash)
 
-      js_keys(doc).each { |k| return "unknown member '#{k}'" unless DOC_KEYS.include?(k) }
-      return 'unsupported schema version' unless strict_eq(prop(doc, 'v'), 1)
+      v2 = strict_eq(prop(doc, 'v'), 2)
+      js_keys(doc).each { |k| return "unknown member '#{k}'" unless (v2 ? DOC_KEYS_V2 : DOC_KEYS).include?(k) }
+      return 'unsupported schema version' unless strict_eq(prop(doc, 'v'), 1) || v2
       return "kind must be '#{ACTION_SCHEMA_KIND}'" unless strict_eq(prop(doc, 'kind'), ACTION_SCHEMA_KIND)
       unless is_str?(doc['site'], 2048) && is_str?(doc['aud'], 256) && is_str?(doc['version'], 128)
         return 'site, aud and version must be non-empty strings'
@@ -397,12 +501,24 @@ module AtlasPca
       end
       return 'state must be an array' if doc.key?('state') && !doc['state'].is_a?(Array)
 
+      if v2
+        return 'traits_digest must be a canonical base64url SHA-256 digest' if doc.key?('traits_digest') && b64d(doc['traits_digest'], 32).nil?
+        if doc.key?('trait_defs') && (!doc['trait_defs'].is_a?(Array) || doc['trait_defs'].length > 64 || !doc['trait_defs'].all? { |x| x.is_a?(Hash) })
+          return 'trait_defs must be an array of up to 64 objects'
+        end
+        if doc.key?('pack')
+          pk = doc['pack']
+          unless pk.is_a?(Hash) && sorted_join(pk) == 'ns,root,version' && is_str?(pk['ns'], 64) && is_str?(pk['version'], 128) && !b64d(pk['root'], 32).nil?
+            return 'pack must be {ns, version, root}'
+          end
+        end
+      end
       verbs = doc['verbs']
       return "verbs must be 1..#{MAX_SCHEMA_VERBS} entries" if !verbs.is_a?(Array) || verbs.empty? || verbs.length > MAX_SCHEMA_VERBS
 
       seen = {}
       verbs.each do |v|
-        e = verb_decl_error(v, units)
+        e = verb_decl_error(v, units, v2)
         return e if e
 
         name = v['verb'].b
@@ -476,6 +592,64 @@ module AtlasPca
       end
     end
 
+    # ---- v2 string formats (syntactic checks, identical in every language) ---------------------------------------------
+    JS_WS = "\\t\\n\\x0b\\f\\r    -     　﻿" # ECMAScript \s
+    FORMAT_RES = {
+      'email' => /\A[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9\-]{1,63}(?:\.[A-Za-z0-9\-]{1,63})+\z/,
+      'url' => /\A[A-Za-z][A-Za-z0-9+.\-]{0,31}:\/\/[^#{JS_WS}\/?#]+[^#{JS_WS}]*\z/,
+      'uri_https' => /\Ahttps:\/\/[^#{JS_WS}\/?#]+[^#{JS_WS}]*\z/,
+      'uuid' => /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/,
+      'phone_e164' => /\A\+[1-9][0-9]{6,14}\z/,
+      'iso_country' => /\A[A-Z]{2}\z/,
+      'iso_currency' => /\A[A-Z]{3}\z/,
+      'semver' => /\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z\-]+(?:\.[0-9A-Za-z\-]+)*)?(?:\+[0-9A-Za-z\-]+(?:\.[0-9A-Za-z\-]+)*)?\z/,
+      'sha256' => /\A[0-9a-f]{64}\z/
+    }.freeze
+    IBAN_RE = /\A[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\z/
+    CIDR4_RE = /\A([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\/([0-9]{1,2})\z/
+    CIDR6_RE = /\A([0-9a-fA-F:]{2,39})\/([0-9]{1,3})\z/
+    ID_FORMAT_RE = /\Aid:[a-z0-9_]+(?:\.[a-z0-9_]+){0,3}\z/
+    ID_VALUE_RE = /\A[A-Za-z0-9._:\-]{1,128}\z/
+    DATETIME_RE = /\A([0-9]{4}-[0-9]{2}-[0-9]{2})T([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])(?:\.[0-9]{1,3})?Z\z/
+
+    def canon_dec?(n) = n.to_i.to_s == n
+
+    def iban_ok?(s)
+      return false unless s.match?(IBAN_RE)
+
+      rem = 0
+      (s[4..] + s[0, 4]).each_char do |ch|
+        v = ch >= 'A' ? ch.ord - 55 : ch.ord - 48
+        rem = (v > 9 ? (rem * 100) + v : (rem * 10) + v) % 97
+      end
+      rem == 1
+    end
+
+    def cidr_ok?(s)
+      if (m = CIDR4_RE.match(s))
+        return m[1..4].all? { |o| o.to_i <= 255 && canon_dec?(o) } && m[5].to_i <= 32 && canon_dec?(m[5])
+      end
+      m = CIDR6_RE.match(s)
+      !m.nil? && m[1].count(':') >= 2 && !m[1].include?(':::') && m[2].to_i <= 128 && canon_dec?(m[2])
+    end
+
+    # The checker (a lambda over a valid-UTF-8 string) of a v2 `format`, or nil when the format is unknown.
+    def format_check(f)
+      return ->(s) { s.length <= 254 && s.match?(FORMAT_RES['email']) } if f == 'email'
+      return method(:iban_ok?) if f == 'iban'
+      return method(:cidr_ok?) if f == 'cidr'
+      return ->(s) { s.match?(FORMAT_RES[f]) } if FORMAT_RES.key?(f)
+
+      f.match?(ID_FORMAT_RE) ? ->(s) { s.match?(ID_VALUE_RE) } : nil
+    end
+
+    def format_violation(d, x)
+      return nil unless d.key?('format')
+
+      ck = format_check(d['format'])
+      ck.nil? || !ck.call(u8(x)) ? ood("not a valid #{js_str(d['format'])}") : nil
+    end
+
     DATE_RE = /\A([0-9]{4})-([0-9]{2})-([0-9]{2})\z/
     DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31].freeze
 
@@ -516,6 +690,27 @@ module AtlasPca
 
         vals = decl(d, 'values')
         return ood('not one of the declared values') if !undef?(vals) && vals.none? { |e| strict_eq(e, x) }
+
+        format_violation(d, x)
+      when 'object_ref'
+        return bt('expected a non-empty id string') unless ustr?(x) && !x.empty?
+        return ood("longer than #{js_str(max_len)} UTF-8 bytes") if x.bytesize > max_len
+
+        format_violation(d, x)
+      when 'datetime'
+        return bt('expected an RFC 3339 UTC string') unless x.is_a?(String)
+
+        m = ustr?(x) ? DATETIME_RE.match(u8(x)) : nil
+        m && calendar_date?(m[1]) ? nil : ood('not an RFC 3339 UTC datetime YYYY-MM-DDTHH:MM:SS[.fff]Z')
+      when 'duration'
+        return bt('expected a safe integer (milliseconds)') unless int?(x)
+        return ood('a duration is not negative') if x.negative?
+
+        mn = decl(d, 'min')
+        return ood("below min #{js_str(mn)}") if !undef?(mn) && x < mn
+
+        mx = decl(d, 'max')
+        return ood("above max #{js_str(mx)}") if !undef?(mx) && x > mx
 
         nil
       when 'integer'
@@ -1356,11 +1551,30 @@ module AtlasPca
       nil
     end
 
+    # Age check of revocation state issued at `issued_at` (epoch ms): at most `max_age_ms` old. An unknown issue time is
+    # unverifiable and denies; a time more than 60 s in the future denies. Total.
+    def check_revocation_age(issued_at, now, max_age_ms, what = 'revocation state')
+      f = ->(reason) { { 'ok' => false, 'reason' => reason } }
+      return f.call("#{what} age is unknown (unverifiable revocation state)") unless num?(issued_at) && issued_at.to_f.finite?
+      return f.call("#{what} issued in the future") unless issued_at <= now + 60_000
+      unless now - issued_at <= max_age_ms
+        return f.call("#{what} is #{js_str(now - issued_at)} ms old, over the verifier's maximum of #{js_str(max_age_ms)} ms (stale revocation state)")
+      end
+
+      { 'ok' => true }
+    rescue StandardError
+      { 'ok' => false, 'reason' => "#{what} age is unknown (unverifiable revocation state)" }
+    end
+
     # Verify a signed revocation epoch (revocation.ts checkRevocationEpoch, the `pq_artifact` "revocation" format): the
     # guardian signs utf8("atlas-pca/revepoch/v1\0") || canonical(bindSuiteFields({instance_id, grant_ref, epoch,
     # set_size, root, issued_at, not_after}, alg, pq_pk)); a PQ epoch verifies only under a key `pins` pins for the
     # guardian. Total.
-    def check_revocation_epoch(ep, guardian_public, now, grant_ref = UNDEF, pins = nil)
+    #
+    # Optional (T9, revocation.ts checkRevocationEpoch): `max_age_ms` caps `now - issued_at`, `last_accepted_epoch` refuses a
+    # rollback, `pcactn_epoch` (the PCActn's signed freshness.epoch) must be >= the signed epoch; UNDEF = not given.
+    def check_revocation_epoch(ep, guardian_public, now, grant_ref = UNDEF, pins = nil, last_accepted_epoch: UNDEF,
+                               pcactn_epoch: UNDEF, max_age_ms: UNDEF)
       f = ->(reason) { { 'ok' => false, 'reason' => reason } }
       if !ep.is_a?(Hash) || !strict_eq(prop(ep, 'guardian'), guardian_public) || (!undef?(prop(ep, 'alg')) && suite_of(prop(ep, 'alg')).nil?)
         return f.call('revocation epoch not signed by the pinned guardian')
@@ -1378,6 +1592,17 @@ module AtlasPca
       return f.call('revocation epoch is for a different grant') if !undef?(grant_ref) && !strict_eq(ep['grant_ref'], grant_ref)
       return f.call('revocation epoch expired (stale revocation root)') unless now <= ep['not_after']
       return f.call('revocation epoch issued in the future') unless ep['issued_at'] <= now + 60_000
+
+      unless undef?(max_age_ms)
+        age = check_revocation_age(ep['issued_at'], now, max_age_ms, 'revocation epoch')
+        return age unless age['ok']
+      end
+      if !undef?(last_accepted_epoch) && ep['epoch'] < last_accepted_epoch
+        return f.call("revocation epoch #{js_str(ep['epoch'])} is older than the last accepted #{js_str(last_accepted_epoch)} (rollback)")
+      end
+      if !undef?(pcactn_epoch) && !(pcactn_epoch >= ep['epoch'])
+        return f.call("PCActn freshness.epoch #{js_str(pcactn_epoch)} predates the revocation epoch #{js_str(ep['epoch'])}")
+      end
 
       { 'ok' => true }
     rescue StandardError, SystemStackError
@@ -1816,7 +2041,10 @@ module AtlasPca
       if ctx.key?('policy')
         # closed member sets; every flag a JSON boolean and every number a safe integer when present (absent = default)
         pol = ctx['policy']
-        js_keys(pol).each { |k| return "policy: unknown member '#{k}'" unless %w[session schema acc map].include?(k) }
+        js_keys(pol).each { |k| return "policy: unknown member '#{k}'" unless %w[session schema acc map model_polarity].include?(k) }
+        if pol.key?('model_polarity') && !%w[strict legacy].include?(pol['model_polarity'])
+          return "policy.model_polarity must be 'strict' or 'legacy'"
+        end
         return 'policy.session must be an object' unless opt_obj?(pol, 'session')
 
         if pol.key?('session')
@@ -1855,6 +2083,7 @@ module AtlasPca
         end
       end
       return 'params must be an object' unless opt_obj?(ctx, 'params')
+      return 'env must be an object' unless opt_obj?(ctx, 'env')
 
       %w[schema session acc].each { |k| return "#{k} must be an object" unless opt_obj?(ctx, k) }
       return 'map must be an object' unless opt_obj?(ctx, 'map')
@@ -2253,6 +2482,7 @@ module AtlasPca
       end
       unless present
         run.call('map') { map_step(p, ctx) } if map_active
+        model_rules(p, grant, ctx, out, run, action)
         return out
       end
 
@@ -2294,10 +2524,58 @@ module AtlasPca
           %w[world prov class].each { |k| merged[k] = we[k] if truthy?(prop(we, k)) }
           out['env'] = merged
         end
+        out['single_source'] = wb['single_source'].dup if wb['single_source'].is_a?(Array) && !wb['single_source'].empty?
       end
+      model_rules(p, grant, ctx, out, run, action)
       out
     rescue StandardError, SystemStackError
       out
+    end
+
+    # The predicate lists a model-derived path could widen: the grant's allow-list and the ceilings (V5 layers).
+    def allow_side_predicates(env, ctx)
+      lists = [env.nil? ? nil : env['predicates']]
+      layers = opt(ctx, 'layers')
+      %w[org site std].each { |k| lists << (layers[k].is_a?(Hash) ? layers[k]['predicates'] : nil) } if layers.is_a?(Hash)
+      lists
+    end
+
+    # Rules 20 and 21, evaluated last (after `classes`, so the verifier-computed `env` is complete). Both read the signed ENVELOPE
+    # of the stored grant: `units` (20) is reported iff `envelope.units` is present; `tighten` (21) iff `envelope.tighten` or a
+    # `model_polarity` (envelope or policy) is present, or a grant-side `where` reads a model-derived env path.
+    def model_rules(p, grant, ctx, out, run, action)
+      env = AtlasPca.read_envelope(grant)
+      preds = allow_side_predicates(env, ctx)
+      if env && env.key?('units')
+        run.call('units') do
+          s = out['schema'] ? okv('doc' => out['schema']) : schema_step(p, ctx)
+          next s unless s['ok']
+
+          doc = s['doc']
+          v = schema_verb(doc, action['verb'])
+          d = AtlasPca.decide_units({ 'units' => env['units'], 'schema_units' => doc['units'], 'verb_params' => v.is_a?(Hash) ? v['params'] : nil,
+                                      'verb' => action['verb'], 'predicates' => preds })
+          d['ok'] ? okv : bad(d['reason'])
+        end
+      end
+      single = out['single_source'] || []
+      pol = opt(opt(ctx, 'policy'), 'model_polarity')
+      polarity = if pol == 'strict' then nil
+                 elsif !undef?(pol) then pol
+                 else env && env.key?('model_polarity') ? env['model_polarity'] : nil
+                 end
+      return unless (env && env.key?('tighten')) || !polarity.nil? || !undef?(pol) || !AtlasPca.model_paths_read(preds, single).empty?
+
+      run.call('tighten') do
+        host = opt(ctx, 'env')
+        menv = (host.is_a?(Hash) ? host : {}).merge(out['env'] || {})
+        inp = { 'predicates' => preds, 'single_source' => single, 'context' => { 'action' => action, 'env' => menv } }
+        inp['tighten'] = env['tighten'] if env && env.key?('tighten')
+        inp['polarity'] = polarity unless polarity.nil?
+        r = AtlasPca.decide_tighten(inp)
+        out['legacy_model_polarity'] = true if r['legacy']
+        r['outcome'] == 'ok' ? okv : bad(r['reason'] || 'refused')
+      end
     end
 
     # True iff any v2 check would be reported (the PCActn carries `intent_session`, a v2 policy is active, or a present
@@ -2345,6 +2623,7 @@ module AtlasPca
   def accumulation_params(verb_decl, unit) = IntentV2.accumulation_params(V2JS.jsnorm(verb_decl), unit)
   def canon_projection(doc, verb, params) = IntentV2.canon_projection(V2JS.jsnorm(doc), verb, V2JS.jsnorm(params))
   def calendar_date?(s) = IntentV2.calendar_date?(s)
+  def schema_floors_error(f) = IntentV2.schema_floors_error(V2JS.jsnorm(f))
 
   def session_root_shape_error(s, signed: true) = IntentV2.session_root_shape_error(V2JS.jsnorm(s), signed)
   def verify_session_root(s, pq_pins = nil) = IntentV2.verify_session_root(V2JS.jsnorm(s), pq_pins.nil? ? nil : V2JS.jsnorm(pq_pins))
@@ -2381,8 +2660,12 @@ module AtlasPca
   def revocation_epoch_shape_error(ep) = IntentV2.revocation_epoch_shape_error(V2JS.jsnorm(ep))
   def revset_root(list) = IntentV2.revset_root(list)
 
-  def check_revocation_epoch(ep, guardian_public, now, grant_ref = V2JS::UNDEF, pins = nil)
-    IntentV2.check_revocation_epoch(V2JS.jsnorm(ep), guardian_public, V2JS.jsnorm(now), grant_ref, pins)
+  def check_revocation_epoch(ep, guardian_public, now, grant_ref = V2JS::UNDEF, pins = nil, **opts)
+    IntentV2.check_revocation_epoch(V2JS.jsnorm(ep), guardian_public, V2JS.jsnorm(now), grant_ref, pins, **opts)
+  end
+
+  def check_revocation_age(issued_at, now, max_age_ms, what = 'revocation state')
+    IntentV2.check_revocation_age(V2JS.jsnorm(issued_at), V2JS.jsnorm(now), V2JS.jsnorm(max_age_ms), what)
   end
 
   def session_revocation_id(session) = IntentV2.session_revocation_id(session)

@@ -69,7 +69,7 @@ B64_PCACTN = AtlasPca.b64e(AtlasPca.canon_bytes(PCACTN))
 # 1. valid header -> app runs + env['pca'] populated
 # ---------------------------------------------------------------------------
 app, seen = terminal_app
-mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW, signature_only: true)
 status, _headers, body = mw.call(header_env(B64_PCACTN))
 check(status == 200, "valid header: status=#{status} want 200 (body=#{body.join})")
 check(seen[:ran] == true, 'valid header: downstream app did not run')
@@ -82,7 +82,7 @@ check(seen[:pca] && seen[:pca]['pcactn'].equal?(PCACTN) || (seen[:pca] && seen[:
 # 1b. valid JSON body { "pcactn": ... } -> app runs; body rewound for downstream
 # ---------------------------------------------------------------------------
 app, seen = terminal_app
-mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW, signature_only: true)
 envelope = "{\"pcactn\":#{AtlasPca.canonicalize(PCACTN)}}"
 input = StringIO.new(envelope)
 env = { 'rack.input' => input } # no header -> body path
@@ -95,7 +95,7 @@ check(input.read == envelope, 'valid body: rack.input was not rewound for downst
 # 2. no header (and no body) -> 401 + WWW-Authenticate
 # ---------------------------------------------------------------------------
 app, seen = terminal_app
-mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW, signature_only: true)
 status, headers, body = mw.call('rack.input' => StringIO.new(''))
 check(status == 401, "no header: status=#{status} want 401")
 check(seen[:ran].nil?, 'no header: downstream app should NOT have run')
@@ -107,7 +107,7 @@ check(body_json(status, headers, body)['error'] == 'invalid_pcactn', 'no header:
 # 2b. undecodable header -> 401
 # ---------------------------------------------------------------------------
 app, = terminal_app
-mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW, signature_only: true)
 status, headers, = mw.call(header_env('!!!not base64!!!'))
 check(status == 401, "undecodable header: status=#{status} want 401")
 check(headers['WWW-Authenticate'].to_s.start_with?('PCA realm="pca"'), 'undecodable header: no challenge')
@@ -117,7 +117,7 @@ check(headers['WWW-Authenticate'].to_s.start_with?('PCA realm="pca"'), 'undecoda
 # ---------------------------------------------------------------------------
 app, seen = terminal_app
 none = ->(_ref) { nil }
-mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: none, now: NOW)
+mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: none, now: NOW, signature_only: true)
 status, headers, body = mw.call(header_env(B64_PCACTN))
 check(status == 401, "unknown grant: status=#{status} want 401")
 check(seen[:ran].nil?, 'unknown grant: downstream app should NOT have run')
@@ -128,7 +128,7 @@ check(body_json(status, headers, body)['error_description'].to_s.include?('unkno
 # 4. wrong audience -> 403 (verifier produces a denying verdict)
 # ---------------------------------------------------------------------------
 app, seen = terminal_app
-mw = AtlasPca::RackMiddleware.new(app, audience: 'rs-someone-else', resolve_grant: RESOLVER, now: NOW)
+mw = AtlasPca::RackMiddleware.new(app, audience: 'rs-someone-else', resolve_grant: RESOLVER, now: NOW, signature_only: true)
 status, headers, body = mw.call(header_env(B64_PCACTN))
 check(status == 403, "wrong audience: status=#{status} want 403")
 check(seen[:ran].nil?, 'wrong audience: downstream app should NOT have run')
@@ -143,7 +143,7 @@ check(headers['WWW-Authenticate'].to_s.start_with?('PCA realm="pca"'), 'wrong au
 # ---------------------------------------------------------------------------
 check(headers['WWW-Authenticate'] == 'PCA realm="pca", error="access_denied"',
       "wrong audience: challenge must not echo the reason, got #{headers['WWW-Authenticate'].inspect}")
-evil = AtlasPca::RackMiddleware.new(terminal_app[0], audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+evil = AtlasPca::RackMiddleware.new(terminal_app[0], audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW, signature_only: true)
 _s, h, = evil.call(header_env('!'))
 check(!h['WWW-Authenticate'].include?('error_description'), 'undecodable: challenge must not carry a description')
 
@@ -153,7 +153,7 @@ check(!h['WWW-Authenticate'].include?('error_description'), 'undecodable: challe
 [nil, ['g'], { 'id' => 'g' }, 7, true].each do |bad|
   seen_refs = []
   app, seen = terminal_app
-  mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: ->(r) { seen_refs << r; GRANT }, now: NOW)
+  mw = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: ->(r) { seen_refs << r; GRANT }, now: NOW, signature_only: true)
   status, headers, body = mw.call(header_env(AtlasPca.b64e(AtlasPca.canon_bytes(PCACTN.merge('grant_ref' => bad)))))
   check(status == 401, "grant_ref #{bad.inspect}: status=#{status} want 401")
   check(seen_refs.empty? && seen[:ran].nil?, "grant_ref #{bad.inspect}: resolver/app must not run")
@@ -161,7 +161,7 @@ check(!h['WWW-Authenticate'].include?('error_description'), 'undecodable: challe
   check(body_json(status, headers, body)['error_description'] == 'malformed PCActn', "grant_ref #{bad.inspect}: description")
 end
 missing = PCACTN.reject { |k, _| k == 'grant_ref' }
-status, = AtlasPca::RackMiddleware.new(terminal_app[0], audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW)
+status, = AtlasPca::RackMiddleware.new(terminal_app[0], audience: AUDIENCE, resolve_grant: RESOLVER, now: NOW, signature_only: true)
                                   .call(header_env(AtlasPca.b64e(AtlasPca.canon_bytes(missing))))
 check(status == 401, "missing grant_ref: status=#{status} want 401")
 
@@ -169,7 +169,7 @@ check(status == 401, "missing grant_ref: status=#{status} want 401")
 # 7. 0.4.2 audit: a raising resolver fails closed (403), never escapes as a 500
 # ---------------------------------------------------------------------------
 app, seen = terminal_app
-boom = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: ->(_r) { raise TypeError, 'db down' }, now: NOW)
+boom = AtlasPca::RackMiddleware.new(app, audience: AUDIENCE, resolve_grant: ->(_r) { raise TypeError, 'db down' }, now: NOW, signature_only: true)
 status, headers, body =
   begin
     boom.call(header_env(B64_PCACTN))

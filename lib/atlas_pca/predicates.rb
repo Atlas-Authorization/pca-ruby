@@ -720,6 +720,86 @@ module AtlasPca
       false
     end
 
+    OP_TEXT = { 'eq' => '==', 'ne' => '!=', 'lt' => '<', 'lte' => '<=', 'gt' => '>', 'gte' => '>=', 'in' => 'in',
+                'nin' => 'not in', 'prefix' => 'starts with', 'like' => 'like', 'matches' => 'matches', 'is_a' => 'is a',
+                'member_of' => 'member of' }.freeze
+    MAX_SHOWN_STRING = 64
+    MAX_SHOWN_ITEMS = 8
+
+    # A scalar operand in a denial reason (TypeScript showValue): only safe integers, booleans, null and plain short
+    # strings are spelled out.
+    def show_value(v, depth = 0)
+      return 'null' if v.nil?
+      return v.to_s if v == true || v == false
+      if num?(v)
+        f = jsnum(v).to_f
+        return f.finite? && f == f.floor && f.abs <= MAX_SAFE ? f.to_i.to_s : '<number>'
+      end
+      if v.is_a?(String)
+        u = units(v)
+        plain = u.length <= MAX_SHOWN_STRING && u.none? { |c| c < 0x20 || c == 0x22 || c == 0x5c || (c >= 0xd800 && c <= 0xdfff) }
+        return plain ? "\"#{v}\"" : '"..."'
+      end
+      if v.is_a?(Array) && depth.zero?
+        return v.length <= MAX_SHOWN_ITEMS ? "[#{v.map { |x| show_value(x, 1) }.join(', ')}]" : '[...]'
+      end
+      '<value>'
+    end
+
+    # The condition as the limit a reader recognises: `amount <= 500`, `currency in ["usd", "eur"]`.
+    def describe_condition(c, depth = 0)
+      return '<condition>' unless c.is_a?(Hash) || c.is_a?(Array)
+
+      if group?(c)
+        return '(...)' if depth >= 2
+
+        if c['all_of'].is_a?(Array)
+          return "all of (#{c['all_of'].first(MAX_SHOWN_ITEMS).map { |x| describe_condition(x, depth + 1) }.join('; ')})"
+        end
+        if c['any_of'].is_a?(Array)
+          return "any of (#{c['any_of'].first(MAX_SHOWN_ITEMS).map { |x| describe_condition(x, depth + 1) }.join('; ')})"
+        end
+        return "not (#{describe_condition(c['not'], depth + 1)})" if c.key?('not')
+
+        return '<condition>'
+      end
+      f = c.is_a?(Hash) && c['field'].is_a?(String) ? c['field'] : '<field>'
+      name = f.start_with?('action.params.') ? f[('action.params.'.length)..] : f
+      op = c.is_a?(Hash) ? c['op'] : nil
+      return c['value'] == false ? "#{name} absent" : "#{name} present" if op == 'exists'
+
+      text = op.is_a?(String) ? OP_TEXT[op] : nil
+      return "#{name} <condition>" if text.nil?
+
+      operand = c.key?('ref') ? (c['ref'].is_a?(String) ? c['ref'] : '<ref>') : (c.key?('value') ? show_value(c['value']) : '<value>')
+      "#{name} #{text} #{operand}"
+    end
+
+    # Inside an unmet top-level condition, the narrowest part that failed (an all_of points at its first unmet child).
+    def narrowest_unmet(c, ctx, depth = 0)
+      if depth < 4 && group?(c) && c.key?('all_of') && c['all_of'].is_a?(Array)
+        c['all_of'].each { |x| return narrowest_unmet(x, ctx, depth + 1) unless AtlasPca.evaluate_condition(x, ctx) }
+      end
+      c
+    end
+
+    # 0.5: when the verb and resource are in scope but a `where` limit is not met, name that limit; nil when no predicate
+    # is in scope (the plain "no predicate permits" wording stays for that case).
+    def first_unmet_limit(predicates, ctx)
+      a = get(ctx, 'action')
+      return nil unless a.is_a?(Hash) && get(a, 'verb').is_a?(String) && get(a, 'resource').is_a?(String)
+
+      predicates.each do |p|
+        next unless p.is_a?(Hash) && verb_matches(get(p, 'verb'), a['verb']) && resource_matches(get(p, 'resource'), a['resource'])
+
+        where = get(p, 'where')
+        next unless where.is_a?(Array)
+
+        where.each { |c| return describe_condition(narrowest_unmet(c, ctx)) unless AtlasPca.evaluate_condition(c, ctx) }
+      end
+      nil
+    end
+
     def evaluate_predicates_inner(predicates, ctx)
       return { 'allowed' => false, 'reason' => 'envelope grants no predicates' } unless predicates.is_a?(Array) && !predicates.empty?
 
@@ -727,6 +807,11 @@ module AtlasPca
         return { 'allowed' => true, 'matched' => p } if AtlasPca.predicate_matches(p, ctx)
       end
       a = get(ctx, 'action')
+      limit = first_unmet_limit(predicates, ctx)
+      unless limit.nil?
+        return { 'allowed' => false,
+                 'reason' => "#{limit} not satisfied for #{js_string(get(a, 'verb'))} on #{js_string(get(a, 'resource'))}" }
+      end
       { 'allowed' => false, 'reason' => "no predicate permits #{js_string(get(a, 'verb'))} on #{js_string(get(a, 'resource'))}" }
     rescue StandardError, SystemStackError
       { 'allowed' => false, 'reason' => 'predicate evaluation error (fail closed)' }

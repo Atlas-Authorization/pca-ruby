@@ -119,7 +119,7 @@ module MutationKill
     v = Corpus.core['vectors'].find { |x| x['expect']['allow'] == true && x['pcactn'].is_a?(Hash) && x['requires'].nil? }
     grant = v['grant']
     mw = AtlasPca::RackMiddleware.new(->(_e) { [200, {}, ['ok']] }, audience: v['context']['aud'],
-                                                                    resolve_grant: ->(_r) { grant }, now: v['context']['now'])
+                                                                    resolve_grant: ->(_r) { grant }, now: v['context']['now'], signature_only: true)
     status = lambda do |n| # pcactn(1) risk_claim(2) inputs(3) arrays 4..n+3
       p = v['pcactn'].merge('risk_claim' => v['pcactn']['risk_claim'].merge('inputs' => { 'zz_depth_probe' => 0 }))
       text = "{\"pcactn\":#{AtlasPca.canonicalize(p).sub('"zz_depth_probe":0', "\"zz_depth_probe\":#{Depth.nested_text(n)}")}}"

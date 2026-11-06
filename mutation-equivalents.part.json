@@ -2,71 +2,11 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/rack_middleware.rb",
-  "mutant": "stmt-delete: raise DecodeError, 'PCActn is not an object' unless obj.is_a?(Hash) => nil",
-  "line": "raise DecodeError, 'PCActn is not an object' unless obj.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 152,
-  "fn": "strict_object",
-  "reason": "unreachable: obj comes from AtlasPca.parse_json (strict, any_top false), whose parse_document raises Malformed('document must be an object') for a non-object top-level value, so obj is always a Hash here; the DecodeError is rescued separately and the verdict is identical."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/rack_middleware.rb",
-  "mutant": "cond-true: obj.is_a?(Hash) => true",
-  "line": "raise DecodeError, 'PCActn is not an object' unless obj.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 152,
-  "fn": "strict_object",
-  "reason": "unreachable: obj comes from AtlasPca.parse_json (strict, any_top false), whose parse_document raises Malformed('document must be an object') for a non-object top-level value, so obj is always a Hash here; the DecodeError is rescued separately and the verdict is identical."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/rack_middleware.rb",
-  "mutant": "call->recv-is_a?: obj.is_a?(Hash) => obj",
-  "line": "raise DecodeError, 'PCActn is not an object' unless obj.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 152,
-  "fn": "strict_object",
-  "reason": "unreachable: obj comes from AtlasPca.parse_json (strict, any_top false), whose parse_document raises Malformed('document must be an object') for a non-object top-level value, so obj is always a Hash here; the DecodeError is rescued separately and the verdict is identical."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/rack_middleware.rb",
-  "mutant": "call->arg-is_a?: obj.is_a?(Hash) => Hash",
-  "line": "raise DecodeError, 'PCActn is not an object' unless obj.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 152,
-  "fn": "strict_object",
-  "reason": "unreachable: obj comes from AtlasPca.parse_json (strict, any_top false), whose parse_document raises Malformed('document must be an object') for a non-object top-level value, so obj is always a Hash here; the DecodeError is rescued separately and the verdict is identical."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/rack_middleware.rb",
-  "mutant": "str-empty: 'PCActn is not an object' => ''",
-  "line": "raise DecodeError, 'PCActn is not an object' unless obj.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 152,
-  "fn": "strict_object",
-  "reason": "unreachable: obj comes from AtlasPca.parse_json (strict, any_top false), whose parse_document raises Malformed('document must be an object') for a non-object top-level value, so obj is always a Hash here; the DecodeError is rescued separately and the verdict is identical."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/rack_middleware.rb",
   "mutant": "str-empty: '../atlas_pca' => ''",
   "line": "require_relative '../atlas_pca'",
   "occurrence": 1,
   "lineno": 19,
   "reason": "require_relative resolves against lib/atlas_pca/ (this file's directory): '' names lib/atlas_pca, exactly the feature '../atlas_pca' names (lib/atlas_pca.rb), so the same file is required; the oracle's fresh-ruby load probe passes for this mutant."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/rack_middleware.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "def initialize(app, audience:, resolve_grant:, now: nil, header: DEFAULT_HEADER, intent_policy: nil, intent_v2: nil)",
-  "occurrence": 1,
-  "lineno": 52,
-  "fn": "initialize",
-  "reason": "intent_policy: false instead of nil: verify_pcactn reads the policy only through normalize_intent_policy, which returns nil for anything that is not a Hash, so false is the same inactive policy."
  },
  {
   "crate": "ruby-pca",
@@ -482,66 +422,6 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca.rb",
-  "mutant": "stmt-delete: return false if ed_sig.nil? => nil",
-  "line": "return false if ed_sig.nil?",
-  "occurrence": 1,
-  "lineno": 860,
-  "fn": "suite_dispatch",
-  "reason": "unreachable: the line before returned false unless verify_b64u(ed_pub, msg, sig) holds, which requires b64d(sig, 64) to be non-nil; b64d is deterministic, so ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES) is never nil here."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca.rb",
-  "mutant": "cond-false: ed_sig.nil? => false",
-  "line": "return false if ed_sig.nil?",
-  "occurrence": 1,
-  "lineno": 860,
-  "fn": "suite_dispatch",
-  "reason": "unreachable: the line before returned false unless verify_b64u(ed_pub, msg, sig) holds, which requires b64d(sig, 64) to be non-nil; b64d is deterministic, so ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES) is never nil here."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca.rb",
-  "mutant": "return-drop: return false => return",
-  "line": "return false if ed_sig.nil?",
-  "occurrence": 1,
-  "lineno": 860,
-  "fn": "suite_dispatch",
-  "reason": "unreachable: the line before returned false unless verify_b64u(ed_pub, msg, sig) holds, which requires b64d(sig, 64) to be non-nil; b64d is deterministic, so ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES) is never nil here."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca.rb",
-  "mutant": "return-nil: return false => return nil",
-  "line": "return false if ed_sig.nil?",
-  "occurrence": 1,
-  "lineno": 860,
-  "fn": "suite_dispatch",
-  "reason": "unreachable: the line before returned false unless verify_b64u(ed_pub, msg, sig) holds, which requires b64d(sig, 64) to be non-nil; b64d is deterministic, so ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES) is never nil here."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca.rb",
-  "mutant": "false->true: false => true",
-  "line": "return false if ed_sig.nil?",
-  "occurrence": 1,
-  "lineno": 860,
-  "fn": "suite_dispatch",
-  "reason": "unreachable: the line before returned false unless verify_b64u(ed_pub, msg, sig) holds, which requires b64d(sig, 64) to be non-nil; b64d is deterministic, so ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES) is never nil here."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca.rb",
-  "mutant": "false->true: false => true",
-  "line": "false",
-  "occurrence": 10,
-  "lineno": 1035,
-  "fn": "verify_b64u",
-  "reason": "rescue -> true in verify_b64u: unreachable. pub / sig are checked is_a?(String) before b64d, b64d never raises (non-String -> nil, its own rescue ArgumentError), and Ed25519Strict.verify rescues StandardError itself, so no exception reaches this rescue."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca.rb",
   "mutant": "str-empty: 'ed25519' => ''",
   "line": "suite = root.key?('alg') ? root['alg'] : 'ed25519'",
   "occurrence": 1,
@@ -685,11 +565,11 @@
   "crate": "ruby-pca",
   "file": "lib/atlas_pca.rb",
   "mutant": "nil->false: nil => false",
-  "line": "def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)",
+  "line": "def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil, fresh_at: nil)",
   "occurrence": 1,
-  "lineno": 1665,
+  "lineno": 1707,
   "fn": "verify_pcactn",
-  "reason": "intent_policy nil -> false: the policy is read only through normalize_intent_policy, which returns nil for anything that is not a Hash, so false is the same inactive policy."
+  "reason": "intent_policy nil -> false: verify_pcactn passes it unchanged to verify_pcactn_unchecked, whose only use is decide_intent_binding (line 1797); there it is read only through intent_policy_active? and normalize_intent_policy, both of which test is_a?(Hash) first, and false and nil are both non-Hash, so active is false and pol is {} for both. Every output is identical for every input."
  },
  {
   "crate": "ruby-pca",
@@ -2700,7 +2580,7 @@
   "occurrence": 1,
   "lineno": 182,
   "fn": "at",
-  "reason": "equivalent: @s[i] is nil for i >= @s.length anyway, and at() is never called with a negative index."
+  "reason": "equivalent: @s is an Array, and Array#[] returns nil for any index >= its length, the same nil the else branch gives; the i >= 0 test is untouched by this mutant, so at(i) is identical for every Integer i."
  },
  {
   "crate": "ruby-pca",
@@ -2710,7 +2590,7 @@
   "occurrence": 1,
   "lineno": 182,
   "fn": "at",
-  "reason": "equivalent: @s[i] is nil for i >= @s.length anyway, and at() is never called with a negative index."
+  "reason": "equivalent: @s is an Array, and Array#[] returns nil for any index >= its length, the same nil the else branch gives; the i >= 0 test is untouched by this mutant, so at(i) is identical for every Integer i."
  },
  {
   "crate": "ruby-pca",
@@ -4806,96 +4686,6 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "stmt-delete: paths.each do |a| paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a !=  => nil",
-  "line": "paths.each do |a|",
-  "occurrence": 1,
-  "lineno": 1213,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "cond-false: a != b && b.start_with?(\"#{a}.\") => false",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "drop-left-&&: a != b && b.start_with?(\"#{a}.\") => b.start_with?(\"#{a}.\")",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "swap-!=: != => ==",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "pred-false-start_with?: b.start_with?(\"#{a}.\") => false",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "return-drop: return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") => return",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "return-nil: return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") => return nil",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "call->recv-call: deny.call(\"prov paths '#{a}' and '#{b}' overlap\") => deny",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
-  "mutant": "call->arg-call: deny.call(\"prov paths '#{a}' and '#{b}' overlap\") => \"prov paths '#{a}' and '#{b}' overlap\"",
-  "line": "paths.each { |b| return deny.call(\"prov paths '#{a}' and '#{b}' overlap\") if a != b && b.start_with?(\"#{a}.\") }",
-  "occurrence": 1,
-  "lineno": 1214,
-  "fn": "decide_param_provenance",
-  "reason": "unreachable: every prov key passes prov_path? (action.params.<one [A-Za-z0-9_] segment>, no dot after the prefix), so no prov path is another's dotted prefix and the overlap test never fires."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_wb.rb",
   "mutant": "drop-right-&&: reg.key?(ref) && taint_level?(reg[ref]) => reg.key?(ref)",
   "line": "ranks << taint_rank(reg.key?(ref) && taint_level?(reg[ref]) ? reg[ref] : 'agent')",
   "occurrence": 1,
@@ -5586,16 +5376,6 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "nil",
-  "occurrence": 1,
-  "lineno": 326,
-  "fn": "param_decl_error",
-  "reason": "the only caller (verb_decl_error) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
   "mutant": "call->arg-is_a?: r['param'].is_a?(String) => String",
   "line": "return \"#{at}: reversibility_by.param must be a declared parameter\" if !r['param'].is_a?(String) || !params.key?(r['param'])",
   "occurrence": 1,
@@ -5632,16 +5412,6 @@
   "lineno": 353,
   "fn": "verb_decl_error",
   "reason": "on JSON values: param_decl_error refused every non-String parameter name (PARAM_PATH_RE) before this check, so a non-String reversibility_by.param is never a key of params and !params.key? already refuses it."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "nil",
-  "occurrence": 2,
-  "lineno": 371,
-  "fn": "verb_decl_error",
-  "reason": "the only caller (action_schema_shape_error) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
  },
  {
   "crate": "ruby-pca",
@@ -6296,62 +6066,12 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->arg-is_a?: keysets.is_a?(Array) => Array",
-  "line": "(keysets.is_a?(Array) ? keysets : []).each do |k|",
-  "occurrence": 1,
-  "lineno": 1306,
-  "fn": "unsupported_suite_reason",
-  "reason": "the only caller passes acc.sequencer_keys after acc_ctx_error required it to be an array when present (absent -> [])."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->recv-is_a?: keysets.is_a?(Array) => keysets",
-  "line": "(keysets.is_a?(Array) ? keysets : []).each do |k|",
-  "occurrence": 1,
-  "lineno": 1306,
-  "fn": "unsupported_suite_reason",
-  "reason": "the only caller passes acc.sequencer_keys after acc_ctx_error required it to be an array when present (absent -> [])."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "cond-true: keysets.is_a?(Array) => true",
-  "line": "(keysets.is_a?(Array) ? keysets : []).each do |k|",
-  "occurrence": 1,
-  "lineno": 1306,
-  "fn": "unsupported_suite_reason",
-  "reason": "the only caller passes acc.sequencer_keys after acc_ctx_error required it to be an array when present (absent -> [])."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "nil",
-  "occurrence": 18,
-  "lineno": 1310,
-  "fn": "unsupported_suite_reason",
-  "reason": "the only caller (acc_step) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
   "mutant": "call->recv-b: ''.b => ''",
   "line": "def empty_tree = b64e(sha(''.b))",
   "occurrence": 1,
   "lineno": 1332,
   "fn": "empty_tree",
   "reason": "''.b and '' have the same (no) bytes, and sha hashes bytes."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "def check_revocation_epoch(ep, guardian_public, now, grant_ref = UNDEF, pins = nil)",
-  "occurrence": 1,
-  "lineno": 1363,
-  "fn": "check_revocation_epoch",
-  "reason": "pins only reaches resolve_pq_key, which tests it with is_a?(Hash): false behaves exactly like nil."
  },
  {
   "crate": "ruby-pca",
@@ -6392,87 +6112,6 @@
   "lineno": 1450,
   "fn": "check_session_revocation",
   "reason": "only key? is read from this Hash, and key? does not depend on the stored value."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "cond-false: ep['epoch'] == last['epoch']['epoch'] && !strict_eq(ep['root'], last['epoch']['root']) => false",
-  "line": "if ep['epoch'] == last['epoch']['epoch'] && !strict_eq(ep['root'], last['epoch']['root'])",
-  "occurrence": 1,
-  "lineno": 1454,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "stmt-delete: if ep['epoch'] == last['epoch']['epoch'] && !strict_eq(ep['root'], last['epoch']['root']) return f.c => nil",
-  "line": "if ep['epoch'] == last['epoch']['epoch'] && !strict_eq(ep['root'], last['epoch']['root'])",
-  "occurrence": 1,
-  "lineno": 1454,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "str-empty: 'epoch' => ''",
-  "line": "if ep['epoch'] == last['epoch']['epoch'] && !strict_eq(ep['root'], last['epoch']['root'])",
-  "occurrence": 1,
-  "multiplicity": 2,
-  "lineno": 1454,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->arg-call: f.call('two different revocation sets under one epoch number (equivocation)') => 'two different revocation sets under one epoch number (equivocation)'",
-  "line": "return f.call('two different revocation sets under one epoch number (equivocation)')",
-  "occurrence": 1,
-  "lineno": 1455,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->recv-call: f.call('two different revocation sets under one epoch number (equivocation)') => f",
-  "line": "return f.call('two different revocation sets under one epoch number (equivocation)')",
-  "occurrence": 1,
-  "lineno": 1455,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-drop: return f.call('two different revocation sets under one epoch number (equivocation)') => return",
-  "line": "return f.call('two different revocation sets under one epoch number (equivocation)')",
-  "occurrence": 1,
-  "lineno": 1455,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-nil: return f.call('two different revocation sets under one epoch number (equivocation)') => return nil",
-  "line": "return f.call('two different revocation sets under one epoch number (equivocation)')",
-  "occurrence": 1,
-  "lineno": 1455,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "str-empty: 'two different revocation sets under one epoch number (equivocation)' => ''",
-  "line": "return f.call('two different revocation sets under one epoch number (equivocation)')",
-  "occurrence": 1,
-  "lineno": 1455,
-  "fn": "check_session_revocation",
-  "reason": "unreachable: ev and last both passed revoked_list_error (ids strictly ascending by bytes, length == set_size == epoch, root == revset_root(list)) and every last id is in ev, so equal epoch numbers force byte-identical lists and therefore equal roots."
  },
  {
   "crate": "ruby-pca",
@@ -6577,16 +6216,6 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "return nil",
-  "occurrence": 2,
-  "lineno": 1592,
-  "fn": "map_dim_error",
-  "reason": "the only caller (map_header_error) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
   "mutant": "return-drop: return nil => return",
   "line": "return nil",
   "occurrence": 2,
@@ -6603,16 +6232,6 @@
   "lineno": 1614,
   "fn": "map_dim_error",
   "reason": "only key? is read from this Hash, and key? does not depend on the stored value."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "return nil",
-  "occurrence": 3,
-  "lineno": 1618,
-  "fn": "map_dim_error",
-  "reason": "the only caller (map_header_error) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
  },
  {
   "crate": "ruby-pca",
@@ -6693,16 +6312,6 @@
   "lineno": 1695,
   "fn": "map_cell_of",
   "reason": "best_len is not read after the break that follows."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "nil",
-  "occurrence": 25,
-  "lineno": 1722,
-  "fn": "map_entry_shape",
-  "reason": "the only caller (map_disclosure_error) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
  },
  {
   "crate": "ruby-pca",
@@ -6827,16 +6436,6 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "return nil if undef?(se)",
-  "occurrence": 1,
-  "lineno": 1903,
-  "fn": "session_ctx_error",
-  "reason": "the only caller (session_step) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
   "mutant": "return-drop: return nil => return",
   "line": "return nil if undef?(se)",
   "occurrence": 1,
@@ -6847,182 +6446,12 @@
  {
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->arg-is_a?: se.is_a?(Hash) => Hash",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->recv-is_a?: se.is_a?(Hash) => se",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "cond-true: se.is_a?(Hash) => true",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-drop: return 'the session context must be an object' => return",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-nil: return 'the session context must be an object' => return nil",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "stmt-delete: return 'the session context must be an object' unless se.is_a?(Hash) => nil",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "str-empty: 'the session context must be an object' => ''",
-  "line": "return 'the session context must be an object' unless se.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1904,
-  "fn": "session_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.session to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "nil",
-  "occurrence": 28,
-  "lineno": 1912,
-  "fn": "session_ctx_error",
-  "reason": "the only caller (session_step) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "return nil if undef?(a)",
-  "occurrence": 1,
-  "lineno": 1917,
-  "fn": "acc_ctx_error",
-  "reason": "the only caller (acc_step) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
   "mutant": "return-drop: return nil => return",
   "line": "return nil if undef?(a)",
   "occurrence": 1,
   "lineno": 1917,
   "fn": "acc_ctx_error",
   "reason": "`return` without a value returns nil: the same as `return nil`."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->arg-is_a?: a.is_a?(Hash) => Hash",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->recv-is_a?: a.is_a?(Hash) => a",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "cond-true: a.is_a?(Hash) => true",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-drop: return 'the accumulator context must be an object' => return",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-nil: return 'the accumulator context must be an object' => return nil",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "stmt-delete: return 'the accumulator context must be an object' unless a.is_a?(Hash) => nil",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "str-empty: 'the accumulator context must be an object' => ''",
-  "line": "return 'the accumulator context must be an object' unless a.is_a?(Hash)",
-  "occurrence": 1,
-  "lineno": 1918,
-  "fn": "acc_ctx_error",
-  "reason": "unreachable: decide_intent_v2 returns before any step when intent_v2_context_error refuses the context, and that requires ctx.acc to be an object when present (UNDEF returned above)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
-  "line": "nil",
-  "occurrence": 29,
-  "lineno": 1930,
-  "fn": "acc_ctx_error",
-  "reason": "the only caller (acc_step) tests this result for truthiness only (`return ... if e`), and false is falsy exactly like nil."
  },
  {
   "crate": "ruby-pca",
@@ -7033,56 +6462,6 @@
   "lineno": 1940,
   "fn": "doc_by_digest",
   "reason": "both callers only test truthy?(doc) (false for nil and UNDEF alike) and acc_step passes it on to acc_selects / acc_value_of, which also only test truthy?(schema)."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "cond-false: !undef?(max_age_s) && !nonneg?(max_age_s) => false",
-  "line": "if !undef?(max_age_s) && !nonneg?(max_age_s)",
-  "occurrence": 1,
-  "lineno": 1991,
-  "fn": "session_step",
-  "reason": "unreachable: intent_v2_context_error (checked by decide_intent_v2 before any step) already refuses a policy.session.max_revocation_age_s that is not a non-negative safe integer."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "stmt-delete: if !undef?(max_age_s) && !nonneg?(max_age_s) return bad('session policy misconfigured: max_revocatio => nil",
-  "line": "if !undef?(max_age_s) && !nonneg?(max_age_s)",
-  "occurrence": 1,
-  "lineno": 1991,
-  "fn": "session_step",
-  "reason": "unreachable: intent_v2_context_error (checked by decide_intent_v2 before any step) already refuses a policy.session.max_revocation_age_s that is not a non-negative safe integer."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-drop: return bad('session policy misconfigured: max_revocation_age_s must be a non-negative safe integer ( => return",
-  "line": "return bad('session policy misconfigured: max_revocation_age_s must be a non-negative safe integer (fail closed)')",
-  "occurrence": 1,
-  "lineno": 1992,
-  "fn": "session_step",
-  "reason": "unreachable: intent_v2_context_error (checked by decide_intent_v2 before any step) already refuses a policy.session.max_revocation_age_s that is not a non-negative safe integer."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "return-nil: return bad('session policy misconfigured: max_revocation_age_s must be a non-negative safe integer ( => return nil",
-  "line": "return bad('session policy misconfigured: max_revocation_age_s must be a non-negative safe integer (fail closed)')",
-  "occurrence": 1,
-  "lineno": 1992,
-  "fn": "session_step",
-  "reason": "unreachable: intent_v2_context_error (checked by decide_intent_v2 before any step) already refuses a policy.session.max_revocation_age_s that is not a non-negative safe integer."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "str-empty: 'session policy misconfigured: max_revocation_age_s must be a non-negative safe integer (fail closed => ''",
-  "line": "return bad('session policy misconfigured: max_revocation_age_s must be a non-negative safe integer (fail closed)')",
-  "occurrence": 1,
-  "lineno": 1992,
-  "fn": "session_step",
-  "reason": "unreachable: intent_v2_context_error (checked by decide_intent_v2 before any step) already refuses a policy.session.max_revocation_age_s that is not a non-negative safe integer."
  },
  {
   "crate": "ruby-pca",
@@ -7530,26 +6909,6 @@
   "crate": "ruby-pca",
   "file": "lib/atlas_pca/intent_v2.rb",
   "mutant": "nil->false: nil => false",
-  "line": "def check_revocation_epoch(ep, guardian_public, now, grant_ref = V2JS::UNDEF, pins = nil)",
-  "occurrence": 1,
-  "lineno": 2384,
-  "fn": "check_revocation_epoch",
-  "reason": "pins only reaches resolve_pq_key, which tests it with is_a?(Hash): false behaves exactly like nil."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "call->arg-jsnorm: V2JS.jsnorm(now) => now",
-  "line": "IntentV2.check_revocation_epoch(V2JS.jsnorm(ep), guardian_public, V2JS.jsnorm(now), grant_ref, pins)",
-  "occurrence": 1,
-  "lineno": 2385,
-  "fn": "check_revocation_epoch",
-  "reason": "now is only read through int? / wb_clock? and numeric comparison or wb_int, which treat an integral Float like its Integer; jsnorm changes nothing else of a number."
- },
- {
-  "crate": "ruby-pca",
-  "file": "lib/atlas_pca/intent_v2.rb",
-  "mutant": "nil->false: nil => false",
   "line": "def check_session_revocation(ev, session:, authority:, ids:, now:, max_age_ms:, scope: V2JS::UNDEF, pins: nil, last: V2JS::UNDEF)",
   "occurrence": 1,
   "lineno": 2397,
@@ -7625,5 +6984,93 @@
   "lineno": 2454,
   "fn": "intent_map_primitive",
   "reason": "decide_map_disclosure reads action only through prop, which is UNDEF for an absent or null action exactly as for {}."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "nil->false: nil => false",
+  "line": "def check_revocation_epoch(ep, guardian_public, now, grant_ref = V2JS::UNDEF, pins = nil, **opts)",
+  "occurrence": 1,
+  "lineno": 2663,
+  "fn": "check_revocation_epoch",
+  "reason": "equivalent: the wrapper's only use of `pins` is to pass it to IntentV2.check_revocation_epoch, whose only use is verify_pinned_suite -> resolve_pq_key(pq_pins: pins), which reads it solely as `pq_pins.is_a?(Hash)`; nil and false are both non-Hash, so for every input the same branch is taken and the result is identical."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "return-drop: return nil => return",
+  "line": "return nil unless d.key?('format')",
+  "occurrence": 1,
+  "lineno": 647,
+  "fn": "format_violation",
+  "reason": "equivalent: a bare `return` returns nil, exactly the value `return nil` returns; nothing else on the line changes, so the method's result is identical for every input."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "pred-false-empty?: wb['single_source'].empty? => false",
+  "line": "out['single_source'] = wb['single_source'] if wb['single_source'].is_a?(Array) && !wb['single_source'].empty?",
+  "occurrence": 1,
+  "lineno": 2542,
+  "fn": "decide_intent_v2",
+  "reason": "equivalent: decide_intent_wb (intent_wb.rb, the only source of wb) sets single_source only `unless w['single_source'].empty?`, and that value is the Array built in the facts step; otherwise the key is absent. So for every input the value is nil or a non-empty Array, and is_a?(Array), a truthiness test and !empty? all agree."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "call->recv-is_a?: wb['single_source'].is_a?(Array) => wb['single_source']",
+  "line": "out['single_source'] = wb['single_source'] if wb['single_source'].is_a?(Array) && !wb['single_source'].empty?",
+  "occurrence": 1,
+  "lineno": 2542,
+  "fn": "decide_intent_v2",
+  "reason": "equivalent: decide_intent_wb (intent_wb.rb, the only source of wb) sets single_source only `unless w['single_source'].empty?`, and that value is the Array built in the facts step; otherwise the key is absent. So for every input the value is nil or a non-empty Array, and is_a?(Array), a truthiness test and !empty? all agree."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca.rb",
+  "mutant": "stmt-delete: require 'digest' => nil",
+  "line": "require 'digest'",
+  "occurrence": 1,
+  "lineno": 7,
+  "reason": "equivalent: the OpenSSL extension's Init_ossl_digest does rb_require(\"digest\"), and this file requires openssl; so Digest is loaded with or without this line on every runtime the library loads on (no openssl: the load fails either way, only at a later line)."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "int-1: 1 => 0",
+  "line": "!m.nil? && m[1].count(':') >= 2 && !m[1].include?(':::') && m[2].to_i <= 128 && canon_dec?(m[2])",
+  "occurrence": 1,
+  "lineno": 635,
+  "fn": "cidr_ok?",
+  "reason": "equivalent: CIDR6_RE is \\A(hex or colon)/(digits)\\z, so m[0] is m[1] + '/' + digits. The suffix holds no colon, and the '/' separates it from m[1], so m[0].count(':') == m[1].count(':') and m[0].include?(':::') == m[1].include?(':::') for every input."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "nil->false: nil => false",
+  "line": "def check_revocation_epoch(ep, guardian_public, now, grant_ref = UNDEF, pins = nil, last_accepted_epoch: UNDEF,",
+  "occurrence": 1,
+  "lineno": 1578,
+  "fn": "check_revocation_epoch",
+  "reason": "equivalent: pins is read only by resolve_pq_key through `is_a?(Hash)` (via verify_pinned_suite); nil and false are both not a Hash, so the same branch runs for every input."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca.rb",
+  "mutant": "stmt-delete: require 'openssl' => nil",
+  "line": "require 'openssl'",
+  "occurrence": 1,
+  "lineno": 9,
+  "reason": "equivalent: agent.rb, arg_provenance.rb, read_vault.rb and store_conformance.rb, all required unconditionally at the end of this file, require securerandom, whose load runs `require 'openssl'`. Nothing in this file touches OpenSSL at load time before them, so every constant resolves the same for every input; without openssl the library fails to work either way."
+ },
+ {
+  "crate": "ruby-pca",
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "mutant": "drop-right-&&: wb['single_source'].is_a?(Array) && !wb['single_source'].empty? => wb['single_source'].is_a?(Array)",
+  "line": "out['single_source'] = wb['single_source'] if wb['single_source'].is_a?(Array) && !wb['single_source'].empty?",
+  "occurrence": 1,
+  "lineno": 2542,
+  "fn": "decide_intent_v2",
+  "reason": "equivalent: decide_intent_wb (intent_wb.rb, the only source of wb) sets single_source only `unless w['single_source'].empty?`, and that value is the Array built in the facts step; otherwise the key is absent. So for every input the value is nil or a non-empty Array, and is_a?(Array), a truthiness test and !empty? all agree."
  }
 ]

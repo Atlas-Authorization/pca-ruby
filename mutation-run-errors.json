@@ -1,0 +1,172 @@
+[
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "split_point",
+  "line": "k *= 2 while k * 2 < n",
+  "occurrence": 1,
+  "mutant": "int+1: 2 => 3",
+  "lineno": 488,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "split_point must return k < n or build(hs[0, k]) receives all of hs again and recurses without end: with k *= 3, n = 3 gives k = 3."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "cond-false: hs.length == 1 => false",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "the base case never returns, so a one-leaf tree splits into [x] and [] and build([]) recurses without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "int-1: 1 => 0",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "the base case is length 0 and never length 1, so build([x]) calls build([x]) (k = 1) without end."
+ },
+ {
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "fn": "monitor_states",
+  "line": "w = int?(m['within']) ? ival(m['within']) : 0",
+  "occurrence": 1,
+  "mutant": "str-empty: 'within' => ''",
+  "lineno": 1134,
+  "evidence": "RUN_ERROR(NoMemoryError)",
+  "reason": "the guard reads a real integer within, then ival(m['']) is nil, so (1..nil) is an endless range and .map allocates until the memory cap; only this mutated read can do that."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "swap-==: == => !=",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "with != the base case returns hs[0] for every list except length 1, so build([x]) has k = 1 and calls build([x]) without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "path_shape",
+  "line": "return [] if n == 1",
+  "occurrence": 1,
+  "mutant": "stmt-delete: return [] if n == 1 => nil",
+  "lineno": 507,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "without the base case path_shape(m, 1) has k = 1 and calls path_shape(m, 1) or path_shape(m - 1, 0), recursing without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "path_shape",
+  "line": "return [] if n == 1",
+  "occurrence": 1,
+  "mutant": "int-1: 1 => 0",
+  "lineno": 507,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "the base case is n == 0, so path_shape(m, 1) has k = 1 and calls path_shape(m, 1) without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "split_point",
+  "line": "k = 1",
+  "occurrence": 1,
+  "mutant": "int+1: 1 => 2",
+  "lineno": 487,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "split_point must return k < n or build(hs[0, k]) receives all of hs again and recurses without end: k starts at 2, so for n = 2 it returns 2."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "split_point",
+  "line": "k *= 2 while k * 2 < n",
+  "occurrence": 1,
+  "mutant": "swap-<: < => <=",
+  "lineno": 488,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "split_point must return k < n or build(hs[0, k]) receives all of hs again and recurses without end: with <=, n = 2 gives k = 2."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "cond-negate: hs.length == 1 => !(hs.length == 1)",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "with the base case negated any list of length 1 recurses, reaching build([x]) with k = 1 without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "call->recv-length: hs.length => hs",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "`hs == 1` is never true for an Array, so the base case never returns and build([x]) recurses without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "merkle_root",
+  "line": "raise Malformed, 'empty leaf set' if leaves.empty?",
+  "occurrence": 1,
+  "mutant": "stmt-delete: raise Malformed, 'empty leaf set' if leaves.empty? => nil",
+  "lineno": 500,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "build([]) has length 0, so split_point(0) is 1, hs[0, 1] is [] and build([]) recurses without end: this guard is the only thing that stops merkle_root([]) from reaching it."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "merkle_root",
+  "line": "raise Malformed, 'empty leaf set' if leaves.empty?",
+  "occurrence": 1,
+  "mutant": "cond-false: leaves.empty? => false",
+  "lineno": 500,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "build([]) has length 0, so split_point(0) is 1, hs[0, 1] is [] and build([]) recurses without end: this guard is the only thing that stops merkle_root([]) from reaching it."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "path_shape",
+  "line": "return [] if n == 1",
+  "occurrence": 1,
+  "mutant": "cond-false: n == 1 => false",
+  "lineno": 507,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "the base case never returns, so path_shape(m, 1) has k = 1 and calls path_shape(m, 1) without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "split_point",
+  "line": "k *= 2 while k * 2 < n",
+  "occurrence": 1,
+  "mutant": "swap-*: * => /",
+  "lineno": 488,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "split_point must return k < n or build(hs[0, k]) receives all of hs again and recurses without end: k / 2 < n holds until k >= 2n, so k >= n for every n."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "stmt-delete: return hs[0] if hs.length == 1 => nil",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "without the base case build([x]) splits into [x] and [] and recurses without end."
+ },
+ {
+  "file": "lib/atlas_pca.rb",
+  "fn": "build",
+  "line": "return hs[0] if hs.length == 1",
+  "occurrence": 1,
+  "mutant": "int+1: 1 => 2",
+  "lineno": 493,
+  "evidence": "RUN_ERROR(SystemStackError)",
+  "reason": "the base case is length 2: build([x]) has no base case and calls build([x]) without end."
+ }
+]

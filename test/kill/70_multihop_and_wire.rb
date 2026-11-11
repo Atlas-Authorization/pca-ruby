@@ -50,10 +50,10 @@ module MutationKill
     # as it arrives on the wire: JSON text -> parsed (UTF-8 strings; b64e returns US-ASCII strings, which tree_ok? refuses)
     wire = ->(x) { AtlasPca.parse_json(AtlasPca.canonicalize(x)) }
     grant = wire.call(root)
-    g = AtlasPca.verify_pcactn(wire.call(p), grant, now: v['context']['now'], audience: v['context']['aud'])
+    g = AtlasPca.verify_pcactn(wire.call(p), grant, now: v['context']['now'], audience: v['context']['aud'], insecure_skip_plan_root_check: true)
     other = wire.call(p.merge('pq_pk' => AtlasPca.b64e(OpenSSL::PKey.generate_key('ML-DSA-65').raw_public_key)))
     g.allow == true && g.checks['leaf_signature'] == true &&
-      AtlasPca.verify_pcactn(other, grant, now: v['context']['now'], audience: v['context']['aud']).checks['leaf_signature'] == false
+      AtlasPca.verify_pcactn(other, grant, now: v['context']['now'], audience: v['context']['aud'], insecure_skip_plan_root_check: true).checks['leaf_signature'] == false
   end
 
   t('closed? exact') do

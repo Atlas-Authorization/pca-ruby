@@ -1,0 +1,105 @@
+{
+  "audience": "payments-rs",
+  "now": 1792929600000,
+  "pcactn": {
+    "ver": 2,
+    "action": {
+      "verb": "payments.send",
+      "resource": "payments/acme",
+      "params_digest": "vn8Vr3EdasY9sS036gd5uNAxKtAUdYzhMjUnSkod9Qk",
+      "reversibility_class": "irreversible"
+    },
+    "grant_ref": "yUXY0hVCuAfpfTTTqKIdBarcjFdZxZpR4acgFnZ54Xc",
+    "cap_chain": [
+      {
+        "id": "yUXY0hVCuAfpfTTTqKIdBarcjFdZxZpR4acgFnZ54Xc",
+        "issuer": "bs9w31lShUG77IukzMDucQKxMxD5ihjCZS55bi-YuOQ",
+        "holder": "a1B3uxRS6gmgkh6UvfEZ1BVfZvylYa1g7rGNSac9kZM",
+        "caveats": [
+          {
+            "agent_binding": {},
+            "caveats": [
+              {
+                "type": "max_spend",
+                "usd": 100
+              }
+            ],
+            "goal_commit": "yV__RNTWmjdINU6sCJrz6we08-JYGtdqWbgT7IQPnvA",
+            "predicates": [
+              {
+                "resource": "payments/*",
+                "verb": [
+                  "payments.send",
+                  "payments.refund"
+                ]
+              }
+            ],
+            "risk_policy": {
+              "bMax": 1000,
+              "kappa": 1,
+              "lambda": 0,
+              "rho": 0,
+              "theta1": 0.5,
+              "theta2": 0.8,
+              "weights": {
+                "alpha": 0,
+                "beta": 0,
+                "delta": 0,
+                "epsilon": 0,
+                "gamma": 0,
+                "zeta": 0
+              }
+            },
+            "type": "envelope"
+          }
+        ],
+        "body_digest": "yUXY0hVCuAfpfTTTqKIdBarcjFdZxZpR4acgFnZ54Xc",
+        "sig": "oxNkEIiUkVfC8T1nI-iQSTpUgE-4fDqdAdPF5kMETD9nyMTiSHe_ZiPvmIXPQsyWKlMTkdCvW195haG3DoOcDg"
+      }
+    ],
+    "plan": {
+      "root": "OoTGka67ZH2FbEVa_H-k7VGoRV_EmhXNYCtOrN2xf_Q",
+      "inclusion_proof": {
+        "index": 0,
+        "size": 1,
+        "path": []
+      },
+      "node_id": "n1",
+      "conditions_digest": "YM87EgmmvAr4WYQDm1wkrB7pFoHs4esi8tOmv9_DUxY"
+    },
+    "attestation": {
+      "quote_digest": "",
+      "epoch": 0,
+      "model_id": "unattested",
+      "measurement": "",
+      "operator": "unattested"
+    },
+    "provenance": {
+      "causal_hash": "",
+      "taint_level": 0,
+      "trusted_refs": []
+    },
+    "freshness": {
+      "beacon_ref": "",
+      "epoch": 0,
+      "accumulator_witness": ""
+    },
+    "counter": 1,
+    "risk_claim": {
+      "r": 0,
+      "inputs": {}
+    },
+    "aud": "payments-rs",
+    "iat": 1792929600000,
+    "exp": 1792930800000,
+    "sig": "O96A8yq43pRCaN7mi0P9gMJnNYZx5esuPY5x4OOBIi-w0Nakyl-i0GGs3MB48LxQBktDPoaQuJdA48fM0HjSBQ"
+  },
+  "operation": {
+    "verb": "payments.send",
+    "resource": "payments/acme",
+    "params": {
+      "amount": 50,
+      "currency": "usd"
+    }
+  }
+}

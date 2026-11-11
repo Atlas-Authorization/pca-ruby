@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Reference verifier for the CORE PCActn checks (wire format v2): strict wire form, freshness binding,
-# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter.
+# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter_format.
 # Stdlib only (OpenSSL >= 3 for the raw Ed25519 equation; torsion / small-order / canonicality are checked here).
 # Normative spec: packages/pca/conformance/README.md.
 require 'digest'
@@ -28,11 +28,12 @@ module AtlasPca
   MAX_LIFETIME_MS = 3_600_000
   MAX_SKEW_MS = 60_000
   MAX_SAFE = (2**53) - 1
-  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
   class Malformed < StandardError; end
 
-  Verdict = Struct.new(:allow, :checks, :reason)
+  # `reasons` lists every failing check's reason in pipeline order (nil: only `reason`); `degraded` names a rule that passed degraded.
+  Verdict = Struct.new(:allow, :checks, :reason, :reasons, :degraded)
 
   module_function
 
@@ -362,7 +363,7 @@ module AtlasPca
   JS_ESCAPES = /["\\\x00-\x1f]/
 
   def js_string(s)
-    raise Malformed, 'invalid string encoding' unless s.valid_encoding?
+    raise Malformed, 'canonicalize: lone surrogate in string' unless s.valid_encoding? # the reference's text (WTF-8 = a lone surrogate)
     # Fast path: nothing to escape (no quote, backslash or control char) -> the string is emitted verbatim.
     return "\"#{s}\"" unless s.match?(JS_ESCAPES)
 
@@ -631,13 +632,14 @@ module AtlasPca
 
     def verify(pub, msg, sig)
       return false unless pub.bytesize == 32 && sig.bytesize == 64
-      return false if acceptable_point(pub).nil?
-      return false if acceptable_point(sig.byteslice(0, 32)).nil?
 
       s = sig.byteslice(32, 32).unpack('C*').each_with_index.sum { |b, i| b << (8 * i) }
       return false if s >= L
+      # the cheap library equation first: the pure-Ruby torsion checks (two scalar multiplications each) run only for a
+      # signature that already verifies, so a forged one costs the attacker's CPU nothing extra (TS keys.ts:34-38)
+      return false unless OpenSSL::PKey.new_raw_public_key('ED25519', pub).verify(nil, sig, msg)
 
-      OpenSSL::PKey.new_raw_public_key('ED25519', pub).verify(nil, sig, msg)
+      !acceptable_point(pub).nil? && !acceptable_point(sig.byteslice(0, 32)).nil?
     rescue StandardError
       false
     end
@@ -857,7 +859,7 @@ module AtlasPca
     pq_msg = msg
     if nested
       ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES)
-      return false if ed_sig.nil?
+      return false if ed_sig.nil? # defence in depth: verify_b64u above already decoded it
 
       pq_msg = msg.b + ed_sig
     end
@@ -1096,7 +1098,11 @@ module AtlasPca
     body, err = signable_hop_body(c)
     return "#{label}: #{err}" if body.nil?
 
-    digest = hash_canonical(body)
+    digest = begin
+      hash_canonical(body)
+    rescue StandardError
+      return "#{label}: malformed body" # a body that cannot be canonicalised (a lone surrogate), as capability.ts checkSig
+    end
     bd = c['body_digest']
     return "#{label}: body digest mismatch" if digest != bd || c['id'] != bd
 
@@ -1222,14 +1228,38 @@ module AtlasPca
         return ["#{label}: caveat #{j} altered or reordered", false] if hash_canonical(cc[j]) != hash_canonical(pc[j])
       end
     end
+    # the leaf holds the full append-only list
+    alloc = allocations_monotone_error(chain[-1]['caveats'])
+    return [alloc, false] if alloc
+
     ['', true]
+  end
+
+  # nil when the carried budget allocations never widen down the chain, else the reason.
+  def allocations_monotone_error(caveats)
+    return 'malformed caveats' unless caveats.is_a?(Array)
+
+    prev = Float::INFINITY
+    caveats.each_with_index do |cv, i|
+      next unless cv.is_a?(Hash) && cv['type'] == 'budget_alloc'
+
+      lim = finite_num(cv['limit'])
+      return "budget_alloc caveat #{i}: limit must be a finite number >= 0" if lim.nil? || lim.negative?
+      if lim > prev
+        return "budget_alloc caveat #{i}: allocation #{Predicates.js_number_string(lim)} widens the parent's carried allocation " \
+               "#{Predicates.js_number_string(prev)} (monotone: a child can only allocate <= its parent)"
+      end
+
+      prev = lim
+    end
+    nil
   end
 
   # ======================= wire validation =======================
   TOP_REQUIRED = %w[ver action grant_ref cap_chain plan attestation provenance freshness counter risk_claim
                     aud iat exp sig].freeze
   TOP_OPTIONAL = %w[nonce caution rationale_commitment progress_step prohibition_evidence tool_binding
-                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session].freeze
+                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session fresh_at].freeze
   ACTION_KEYS = %w[verb resource params_digest reversibility_class].freeze
   PLAN_REQUIRED = %w[root inclusion_proof node_id].freeze
   PROOF_KEYS = %w[index size path].freeze
@@ -1288,6 +1318,9 @@ module AtlasPca
     return false if p.key?('intent') && !intent_wire_error(p['intent']).nil?
     # Intent Layer v2 (SIGNED): the `intent_session` member, when present, passes rule 13's closed wire shape.
     return false if p.key?('intent_session') && !validate_intent_session_wire(p['intent_session']).nil?
+
+    # Consistency token (SIGNED): the `fresh_at` member, when present, passes its closed wire shape (fresh_at.rb).
+    return false if p.key?('fresh_at') && !validate_fresh_at_wire(p['fresh_at']).nil?
 
     th = p['threshold']
     return true unless p.key?('threshold')
@@ -1522,6 +1555,8 @@ module AtlasPca
   INTENT_GOAL_V2_PREFIX = 'pca-intent:v2:'
   # Intent Layer v2 session grants over a COMMITTED map (rule 19): `pca-intent:v2c:<session>:<map_commit>`.
   INTENT_GOAL_V2C_PREFIX = 'pca-intent:v2c:'
+  # Goal binding v3: `pca-intent:v3:<goal_digest>:<policy_digest>` (the signed Goal IR plus the compiled policy).
+  INTENT_GOAL_V3_PREFIX = 'pca-intent:v3:'
   INTENT_GOAL_COMMIT_DOMAIN = "atlas-pca/goal/v1\x00"
   PPM_ONE = 1_000_000
   MAX_INTENT_GOAL_SALT_LEN = 128
@@ -1569,15 +1604,39 @@ module AtlasPca
     hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => goal, 'salt' => goal_salt })
   end
 
+  # A well-formed `approved_goal`: a closed object of exactly `goal_digest` and `policy_digest`, both canonical
+  # base64url of 32 bytes (String or Symbol keys).
+  def approved_goal_ref?(v)
+    return false unless v.is_a?(Hash) && v.length == 2
+
+    r = v.transform_keys(&:to_s)
+    # a String/Symbol key collision leaves one member: refused here, and again by the missing member
+    r.length == 2 && b32?(r['goal_digest']) && b32?(r['policy_digest'])
+  end
+
+  # The goal v3 string. Raises ArgumentError on a malformed digest: never commit to garbage.
+  def intent_goal_v3(ref)
+    raise ArgumentError, 'intent_goal_v3: goal_digest and policy_digest must be canonical base64url (32 bytes)' unless approved_goal_ref?(ref)
+
+    r = ref.transform_keys(&:to_s)
+    "#{INTENT_GOAL_V3_PREFIX}#{r['goal_digest']}:#{r['policy_digest']}"
+  end
+
+  # The goal v3 commitment for a salt (same domain and hash as intent_goal_commit).
+  def intent_goal_commit_v3(ref, goal_salt)
+    hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => intent_goal_v3(ref), 'salt' => goal_salt })
+  end
+
   # A policy Hash with String keys (Symbol keys are accepted too), or nil when `policy` is not a Hash.
   def normalize_intent_policy(policy)
     policy.is_a?(Hash) ? policy.transform_keys(&:to_s) : nil
   end
 
-  # True iff the policy is active: `require` is exactly true, or either threshold key is present.
+  # True iff the policy is active: `require` is exactly true, or a threshold key or `approved_goal` is present.
   def intent_policy_active?(policy)
     pol = normalize_intent_policy(policy)
-    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm'))
+    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm') ||
+                  pol.key?('approved_goal'))
   end
 
   # RAW JSON TEXT as the platform JSON parser of the reference reads it (conformance README "Raw JSON text members":
@@ -1626,11 +1685,19 @@ module AtlasPca
     if (pol.key?('min_fidelity_ppm') && lo.nil?) || (pol.key?('max_residual_risk_ppm') && hi.nil?)
       return [:fail, 'intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)']
     end
+    v3 = pol.key?('approved_goal')
+    if v3 && !approved_goal_ref?(pol['approved_goal'])
+      return [:fail, 'intent policy misconfigured: approved_goal digests must be canonical base64url (32 bytes) (fail closed)']
+    end
     return [:fail, 'this verifier requires an intent binding but the PCActn carries none'] if intent.nil?
 
     commit = root_goal_commit(grant)
     return [:fail, 'the root grant carries no envelope goal commitment to bind the intent to'] if commit.nil?
-    if intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
+    if v3
+      if intent_goal_commit_v3(pol['approved_goal'], intent['goal_salt']) != commit
+        return [:fail, "the root grant's goal commitment does not open to the approved goal and compiled policy (v3)"]
+      end
+    elsif intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
       return [:fail, "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"]
     end
     if lo && intent['fidelity_ppm'] < lo
@@ -1662,15 +1729,23 @@ module AtlasPca
   # proofs}}, layers, acc {state, monitors, receipts, last_seq, sequencer_keys}, wb {artifacts, policy}. The v2 checks
   # (schema, intent_session, layers, accumulators, facts, provenance, classes; see decide_intent_v2) follow `intent`, each
   # reported only when the PCActn carries `intent_session` or a v2 policy is active; allow requires all reported ones.
-  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+  # authorized_plan_roots: Array of the Merkle plan roots this verifier knows the principal authorized (TS authorizedPlanRoots).
+  # Given (even empty) `plan_root_authorized` is enforced; omitted it FAILS unless the explicit opt-out
+  # insecure_skip_plan_root_check: true is set (check then absent = not enforced). authorize passes the skip (it checks its own).
+  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil, fresh_at: nil,
+                    authorized_plan_roots: nil, insecure_skip_plan_root_check: false, pq_pins: nil)
     verify_pcactn_unchecked(pcactn, grant, now: now, audience: audience, allowed_suites: allowed_suites,
-                                           intent_policy: intent_policy, intent_v2: intent_v2)
+                                           intent_policy: intent_policy, intent_v2: intent_v2, fresh_at: fresh_at,
+                                           authorized_plan_roots: authorized_plan_roots,
+                                           insecure_skip_plan_root_check: insecure_skip_plan_root_check, pq_pins: pq_pins)
   rescue StandardError => e
     # TOTAL (R6-05): a residual fault on hostile input is a terminal wire refusal, never an exception.
     Verdict.new(false, { 'wire' => false }, "wire: malformed input (#{e.class})")
   end
 
-  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+  # Every option is passed by verify_pcactn (its only caller): no defaults here.
+  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites:, intent_policy:, intent_v2:, fresh_at:,
+                              authorized_plan_roots:, insecure_skip_plan_root_check:, pq_pins: nil)
     if pcactn.is_a?(String)
       # FIRST: before any parsing (String#bytesize is the raw byte length)
       return Verdict.new(false, { 'wire' => false }, "wire: #{ARTIFACT_SIZE_REASON}") if pcactn.bytesize > MAX_ARTIFACT_BYTES
@@ -1715,8 +1790,14 @@ module AtlasPca
         false
       else
         gi = grant['issuer']
-        verify_chain(chain, gi, gi.is_a?(String), allowed_suites, nil, grant).last # chain[0] == grant was checked above
+        verify_chain(chain, gi, gi.is_a?(String), allowed_suites, pq_pins, grant).last # chain[0] == grant was checked above
       end
+    end
+
+    # A PQ pin for the root issuer says its grants are post-quantum protected: a classical root naming it is refused (the full verifier's
+    # pq_pin rule, same reason). The chain check above is unchanged: it only constrains non-Ed25519 roots. No pin for the issuer: no check.
+    if pq_pins.is_a?(Hash) && grant.is_a?(Hash) && (grant['alg'] || 'ed25519') == 'ed25519' && pq_pins.key?(grant['issuer'])
+      run.call('pq_pin', 'the grant issuer is pinned to a post-quantum key; a classical grant is refused') { false }
     end
 
     # grant_ref_bound (normative): the signed grant_ref MUST be a non-empty string byte-equal to the id of the ROOT
@@ -1734,6 +1815,16 @@ module AtlasPca
       verify_inclusion(plan['root'], plan['inclusion_proof'], plan_leaf(plan['node_id'], pcactn['action'], cond))
     end
 
+    if authorized_plan_roots.nil?
+      unless insecure_skip_plan_root_check == true
+        run.call('plan_root_authorized', 'no authorized plan is configured for this verifier (set authorizedPlanRoots, or the explicit insecureSkipPlanRootCheck)') { false }
+      end
+    else
+      run.call('plan_root_authorized', 'the plan root has not been authorized by the principal') do
+        authorized_plan_roots.is_a?(Array) && authorized_plan_roots.include?(plan['root'])
+      end
+    end
+
     run.call('leaf_signature', 'signature does not verify under the leaf holder key') do
       if chain.empty?
         false
@@ -1745,7 +1836,7 @@ module AtlasPca
       end
     end
 
-    run.call('counter', 'not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
+    run.call('counter_format', 'missing or not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
 
     # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
     # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
@@ -1755,17 +1846,31 @@ module AtlasPca
 
     CHECK_ORDER.each { |k| checks[k] = false unless checks.key?(k) }
     ordered = CHECK_ORDER.to_h { |k| [k, checks[k]] }
+    ordered['plan_root_authorized'] = checks['plan_root_authorized'] if checks.key?('plan_root_authorized')
+    ordered['pq_pin'] = checks['pq_pin'] if checks.key?('pq_pin') # present only when the caller's pins name a classical root's issuer
+    # fail closed at the core: this SDK has no zk verifier, so a carried proof never passes unchecked
+    if pcactn.key?('zk_compliance')
+      ordered['zk_compliance'] = false
+      reason = 'zk_compliance: PCActn carries a zk_compliance proof but no zk verifier enforced it (fail closed): configure hooks.zk or do not present a proof' if reason.empty?
+    end
     unless intent_status == :absent
       ordered['intent'] = intent_status == :pass
       reason = "intent: #{intent_why}" if intent_status == :fail && reason.empty?
     end
     # Intent Layer v2: schema (14), intent_session (13), layers (V5), accumulators (15), facts / provenance / classes
     # (16-18), each reported only when the PCActn carries `intent_session` or a v2 policy is active.
-    decide_intent_v2(pcactn, grant, intent_v2, now)['checks'].each do |c|
+    v2 = decide_intent_v2(pcactn, grant, intent_v2, now)
+    # Consistency token: `fresh_at`, after the intent checks; reported only when the PCActn carries the member, a side-carried
+    # token is read, or the policy requires one (otherwise absent: byte-identical to before).
+    fa = decide_fresh_at(pcactn, fresh_at, now)
+    v2_checks = fa.nil? ? v2['checks'] : v2['checks'] + [fa]
+    all_reasons = fold_escalation(reason.empty? ? [] : [reason], v2_checks, {})['reasons']
+    v2_checks.each do |c|
       ordered[c['name']] = c['ok'] ? true : false
       reason = "#{c['name']}: #{c['reason'] || 'rejected'}" if !c['ok'] && reason.empty?
     end
-    Verdict.new(ordered.values.all?, ordered, reason)
+    degraded = v2['legacy_model_polarity'] ? { 'tighten' => "model_polarity 'legacy': a grant reads a model-derived value in where (rule 21)" } : nil
+    Verdict.new(ordered.values.all?, ordered, reason, all_reasons, degraded)
   end
 end
 
@@ -1777,3 +1882,51 @@ require_relative 'atlas_pca/predicates'
 require_relative 'atlas_pca/intent_layers'
 require_relative 'atlas_pca/intent_wb'
 require_relative 'atlas_pca/intent_v2'
+require_relative 'atlas_pca/actions'
+require_relative 'atlas_pca/actions_registry'
+# 0.5: the ternary decision, escalation answers and the full authorize() pipeline (opt-in; verify_pcactn is unchanged).
+require_relative 'atlas_pca/decision'
+require_relative 'atlas_pca/forbid_certificate'
+require_relative 'atlas_pca/policy_link'
+require_relative 'atlas_pca/fresh_at'
+require_relative 'atlas_pca/pca_grant'
+require_relative 'atlas_pca/blueprint'
+require_relative 'atlas_pca/k4'
+require_relative 'atlas_pca/runtime_claim'
+require_relative 'atlas_pca/a2a'
+require_relative 'atlas_pca/workflow'
+require_relative 'atlas_pca/readside'
+require_relative 'atlas_pca/read_vault'
+require_relative 'atlas_pca/lease'
+require_relative 'atlas_pca/break_glass'
+require_relative 'atlas_pca/missing_context'
+require_relative 'atlas_pca/policy_classes'
+require_relative 'atlas_pca/obligations'
+require_relative 'atlas_pca/undo'
+require_relative 'atlas_pca/k3'
+require_relative 'atlas_pca/escalation'
+require_relative 'atlas_pca/approval'
+require_relative 'atlas_pca/passport'
+require_relative 'atlas_pca/ledger'
+require_relative 'atlas_pca/optimistic'
+require_relative 'atlas_pca/intent_history'
+require_relative 'atlas_pca/mesh'
+require_relative 'atlas_pca/revocation_staleness'
+require_relative 'atlas_pca/assurance'
+require_relative 'atlas_pca/arg_provenance'
+require_relative 'atlas_pca/risk'
+require_relative 'atlas_pca/prohibitions'
+require_relative 'atlas_pca/contracts'
+require_relative 'atlas_pca/taint'
+require_relative 'atlas_pca/beacons'
+require_relative 'atlas_pca/authorize'
+require_relative 'atlas_pca/atomic_kv'
+require_relative 'atlas_pca/plan_lifecycle'
+require_relative 'atlas_pca/operations'
+require_relative 'atlas_pca/stepup'
+require_relative 'atlas_pca/store_conformance'
+require_relative 'atlas_pca/caveat_lang'
+require_relative 'atlas_pca/provenance_gate'
+require_relative 'atlas_pca/refusal_help'
+require_relative 'atlas_pca/protect'
+require_relative 'atlas_pca/agent'

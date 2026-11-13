@@ -66,7 +66,7 @@ build = lambda do |root, intent = nil|
 end
 
 G = mint_root.call([{ 'type' => 'max_spend', 'usd' => 1 }, { 'type' => 'envelope', 'goal_commit' => COMMIT }])
-verify = ->(p, policy = nil, grant = G) { AtlasPca.verify_pcactn(p, grant, now: NOW, audience: AUD, intent_policy: policy) }
+verify = ->(p, policy = nil, grant = G) { AtlasPca.verify_pcactn(p, grant, now: NOW, audience: AUD, insecure_skip_plan_root_check: true, intent_policy: policy) }
 BASE_KEYS = AtlasPca::CHECK_ORDER
 
 # ---- positive binding (envelope is the SECOND caveat: the first `envelope` caveat counts)

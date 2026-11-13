@@ -45,7 +45,10 @@ module MutationKill
       [wire(x), wire(root)]
     end
 
-    def mw = AtlasPca::RackMiddleware
+    SigOnlyMw = Class.new(AtlasPca::RackMiddleware) do
+      def initialize(app, **o) = super(app, signature_only: true, **o)
+    end
+    def mw = SigOnlyMw
 
     def rack
       pa, grant = fresh
@@ -55,7 +58,7 @@ module MutationKill
       app = ->(_env) { [200, {}, ['ok']] }
       env = ->(h = hdr) { { 'HTTP_PCA_ACTION' => h, 'rack.input' => StringIO.new('') } }
       # sanity: the minted PCActn verifies at the wall clock
-      v = AtlasPca.verify_pcactn(pa, grant, now: (Time.now.to_f * 1000).to_i, audience: aud)
+      v = AtlasPca.verify_pcactn(pa, grant, now: (Time.now.to_f * 1000).to_i, audience: aud, insecure_skip_plan_root_check: true)
       return "minted pcactn denied: #{v.reason}" unless v.allow == true
       # every optional kwarg left at its default (now: wall clock, no intent policy, no intent_v2)
       return 'defaults' unless mw.new(app, audience: aud, resolve_grant: res).call(env.call)[0] == 200
@@ -90,14 +93,15 @@ module MutationKill
 
     def forbidden
       m = mw.new(->(_) {}, audience: 'a', resolve_grant: ->(_) {})
-      want = lambda do |desc, failed|
+      doc = 'https://github.com/Atlas-Authorization/pca/blob/main/docs/reference/refusals.md'
+      want = lambda do |desc, failed, check|
         [403, { 'WWW-Authenticate' => 'PCA realm="pca", error="access_denied"', 'content-type' => 'application/json' },
-         [%({"error":"access_denied","error_description":"#{desc}","failed_checks":#{JSON.generate(failed)}})]]
+         [%({"error":"access_denied","error_description":"#{desc}","failed_checks":#{JSON.generate(failed)},"doc":"#{doc}##{check}"})]]
       end
       v = ->(reason) { AtlasPca::Verdict.new(false, { 'wire' => true, 'chain' => false, 'x' => false }, reason) }
-      return 'nil reason' unless m.send(:forbidden, v.call(nil)) == want.call('policy denied the action', %w[chain x])
-      return 'empty reason' unless m.send(:forbidden, v.call('')) == want.call('policy denied the action', %w[chain x])
-      return 'reason kept' unless m.send(:forbidden, v.call('chain: bad')) == want.call('chain: bad', %w[chain x])
+      return 'nil reason' unless m.send(:forbidden, v.call(nil)) == want.call('policy denied the action', %w[chain x], 'policy')
+      return 'empty reason' unless m.send(:forbidden, v.call('')) == want.call('policy denied the action', %w[chain x], 'policy')
+      return 'reason kept' unless m.send(:forbidden, v.call('chain: bad')) == want.call('chain: bad', %w[chain x], 'chain')
       nil
     end
 

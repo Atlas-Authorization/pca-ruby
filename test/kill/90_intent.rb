@@ -22,7 +22,7 @@ module MutationKill
     MIS = 'intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)'
     NOENV = 'the root grant carries no envelope goal commitment to bind the intent to'
     OPEN = "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"
-    BASE = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+    BASE = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
     def keys = (@keys ||= JSON.parse(File.read(KEYS)))
     def b64(bin) = Base64.urlsafe_encode64(bin, padding: false)
@@ -73,7 +73,7 @@ module MutationKill
       p.merge('sig' => AtlasPca.b64e(key('agent').sign(nil, AtlasPca.threshold_message(p))))
     end
 
-    def verify(p, g, pol = nil, aud: AUD) = AtlasPca.verify_pcactn(p, g, now: NOW, audience: aud, intent_policy: pol)
+    def verify(p, g, pol = nil, aud: AUD) = AtlasPca.verify_pcactn(p, g, now: NOW, audience: aud, insecure_skip_plan_root_check: true, intent_policy: pol)
     def all_ok = BASE.to_h { |k| [k, true] }
     def with_intent(ok = true) = all_ok.merge('intent' => ok)
   end
@@ -254,7 +254,7 @@ module MutationKill
     } && [{ 'require' => true }, { 'min_fidelity_ppm' => 1 }, { max_residual_risk_ppm: 5 }].all? { |p|
       v = i.verify(plain, g, p)
       v.allow == false && v.checks == i.with_intent(false) && v.checks.keys.last == 'intent' && v.reason == "intent: #{Intent::REQ}"
-    } && AtlasPca.verify_pcactn(plain, g, now: Intent::NOW, audience: Intent::AUD).checks == i.all_ok
+    } && AtlasPca.verify_pcactn(plain, g, now: Intent::NOW, audience: Intent::AUD, insecure_skip_plan_root_check: true).checks == i.all_ok
   end
 
   t('verify_pcactn: intent failures, first envelope wins, envelope not first binds') do

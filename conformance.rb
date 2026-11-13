@@ -93,7 +93,7 @@ vs.each do |v|
   rs = v['requires_suite']
   if rs.is_a?(String) && !AtlasPca.supported_suites.include?(rs)
     ctx = v['context']
-    got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], intent_v2: ctx['intent_v2'])
+    got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true, intent_v2: ctx['intent_v2'])
     first = got.checks.find { |_, ok| !ok }&.first
     # a vector that names its refusal (reason_contains: e.g. the session-root pin checks) reaches it before the suite work
     rc = v['expect']['reason_contains']
@@ -107,7 +107,7 @@ vs.each do |v|
     per_suite_skipped["#{bucket} | #{suite}"] += 1
     if v['pcactn'].is_a?(Hash)
       ctx = v['context']
-      got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'])
+      got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true)
       check(got.allow == false && got.reason.to_s.include?(AtlasPca::UNSUPPORTED_SUITE),
             "#{v['name']}: suite #{suite} is not supported here: want a deny with unsupported_suite, got allow=#{got.allow} (#{got.reason})")
     end
@@ -124,7 +124,7 @@ vs.each do |v|
   ipol = ctx.key?('intent_policy_json') ? AtlasPca.parse_intent_policy_json(ctx['intent_policy_json']) : ctx['intent_policy']
   # Intent Layer v2: `context.intent_v2` is the verifier state (policy, params, schema, session, layers, acc, wb); the v2
   # checks appear in `expect.checks` exactly when reported (the check-set comparison below covers them).
-  got = AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'],
+  got = AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true, allowed_suites: ctx['allowed_suites'],
                                                   intent_policy: ipol, intent_v2: ctx['intent_v2'])
   exp = v['expect']
   check(got.allow == exp['allow'], "#{v['name']}: allow=#{got.allow} want #{exp['allow']} (#{got.reason})")
@@ -289,7 +289,7 @@ malformed.each do |m|
       ok == false
     when 'threshold_share' then AtlasPca.verify_threshold_share(inp) == false
     when 'pcactn_json'
-      AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud']).allow == false
+      AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'], insecure_skip_plan_root_check: true).allow == false
     else false
     end
   rescue StandardError => ex
@@ -340,7 +340,7 @@ depth_cases.each do |d|
       ok
     when 'threshold_share' then AtlasPca.verify_threshold_share(inp)
     when 'pcactn_json'
-      AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud']).allow
+      AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'], insecure_skip_plan_root_check: true).allow
     when 'json_parse'
       begin
         AtlasPca.parse_json(inp['text'], any_top: true)

@@ -53,7 +53,7 @@ module Corpus
   def verify_one(v)
     ctx = v['context']
     input = v.key?('pcactn_json') ? v['pcactn_json'] : v['pcactn']
-    AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'],
+    AtlasPca.verify_pcactn(input, v['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true, allowed_suites: ctx['allowed_suites'],
                                               intent_policy: intent_policy(ctx), intent_v2: intent_v2(ctx))
   end
 
@@ -114,7 +114,7 @@ module Corpus
           when 'chain' then AtlasPca.verify_chain(inp['chain'], inp['expected_root_issuer'], true).reverse.join('|')
           when 'threshold_share' then AtlasPca.verify_threshold_share(inp).inspect
           when 'pcactn_json'
-            g = AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'])
+            g = AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'], insecure_skip_plan_root_check: true)
             "#{g.allow}|#{g.checks.map { |ck, cv| "#{ck}=#{cv}" }.join(',')}|#{g.reason}"
           end
         end)]
@@ -126,7 +126,7 @@ module Corpus
           when 'chain' then AtlasPca.verify_chain(inp['chain'], inp['expected_root_issuer'], !inp['expected_root_issuer'].nil?).reverse.join('|')
           when 'threshold_share' then AtlasPca.verify_threshold_share(inp).inspect
           when 'pcactn_json'
-            g = AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'])
+            g = AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'], insecure_skip_plan_root_check: true)
             "#{g.allow}|#{g.checks.map { |ck, cv| "#{ck}=#{cv}" }.join(',')}|#{g.reason}"
           when 'json_parse' then parse_outcome(inp['text'], any_top: true)[0, 200]
           end
@@ -216,7 +216,7 @@ module Corpus
         case m['api']
         when 'chain' then AtlasPca.verify_chain(inp['chain'], inp['expected_root_issuer'], true).last == false
         when 'threshold_share' then AtlasPca.verify_threshold_share(inp) == false
-        when 'pcactn_json' then AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud']).allow == false
+        when 'pcactn_json' then AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'], insecure_skip_plan_root_check: true).allow == false
         end
       end
     end
@@ -241,7 +241,7 @@ module Corpus
         got = case d['api']
               when 'chain' then AtlasPca.verify_chain(inp['chain'], inp['expected_root_issuer'], !inp['expected_root_issuer'].nil?).last
               when 'threshold_share' then AtlasPca.verify_threshold_share(inp)
-              when 'pcactn_json' then AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud']).allow
+              when 'pcactn_json' then AtlasPca.verify_pcactn(inp['text'], inp['grant'], now: inp['now'], audience: inp['aud'], insecure_skip_plan_root_check: true).allow
               when 'json_parse'
                 begin
                   AtlasPca.parse_json(inp['text'], any_top: true)
@@ -321,7 +321,7 @@ module Corpus
       val = if c['kind'] == 'verify'
               begin
                 grant = AtlasPca.parse_json(c['grant'], loose: true)
-                g = AtlasPca.verify_pcactn(raw, grant, now: c['now'], audience: c['aud'], allowed_suites: c['allowed_suites'],
+                g = AtlasPca.verify_pcactn(raw, grant, now: c['now'], audience: c['aud'], insecure_skip_plan_root_check: true, allowed_suites: c['allowed_suites'],
                                                      intent_policy: intent_policy(c), intent_v2: intent_v2(c))
                 "#{g.allow}|#{g.checks.map { |ck, cv| "#{ck}=#{cv}" }.join(',')}|#{esc(g.reason)}"
               rescue StandardError, SystemStackError => e

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Reference verifier for the CORE PCActn checks (wire format v2): strict wire form, freshness binding,
-# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter.
+# capability chain, Merkle plan inclusion, strict RFC 8032 Ed25519 leaf signature, counter_format.
 # Stdlib only (OpenSSL >= 3 for the raw Ed25519 equation; torsion / small-order / canonicality are checked here).
 # Normative spec: packages/pca/conformance/README.md.
 require 'digest'
@@ -28,11 +28,12 @@ module AtlasPca
   MAX_LIFETIME_MS = 3_600_000
   MAX_SKEW_MS = 60_000
   MAX_SAFE = (2**53) - 1
-  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter].freeze
+  CHECK_ORDER = %w[wire version audience validity chain grant_ref_bound plan_inclusion leaf_signature counter_format].freeze
 
   class Malformed < StandardError; end
 
-  Verdict = Struct.new(:allow, :checks, :reason)
+  # `reasons` lists every failing check's reason in pipeline order (nil: only `reason`); `degraded` names a rule that passed degraded.
+  Verdict = Struct.new(:allow, :checks, :reason, :reasons, :degraded)
 
   module_function
 
@@ -215,12 +216,14 @@ module AtlasPca
       u = hex4
       if (0xd800..0xdbff).cover?(u)
         if @s.byteslice(@i, 2) == '\\u'.b
+          mark = @i
           @i += 2
           lo = hex4
           if (0xdc00..0xdfff).cover?(lo)
             out << [0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00)].pack('U').b
             return
           end
+          @i = mark # not a low surrogate: that escape is its own character, parsed on the next turn (it was being dropped)
         end
         lone_surrogate!(out, u)
       elsif (0xdc00..0xdfff).cover?(u)
@@ -362,7 +365,7 @@ module AtlasPca
   JS_ESCAPES = /["\\\x00-\x1f]/
 
   def js_string(s)
-    raise Malformed, 'invalid string encoding' unless s.valid_encoding?
+    raise Malformed, 'canonicalize: lone surrogate in string' unless s.valid_encoding? # the reference's text (WTF-8 = a lone surrogate)
     # Fast path: nothing to escape (no quote, backslash or control char) -> the string is emitted verbatim.
     return "\"#{s}\"" unless s.match?(JS_ESCAPES)
 
@@ -383,8 +386,21 @@ module AtlasPca
     out << '"'
   end
 
+  # the reference's wording of a number the strict canonical form refuses (strictNumberError)
+  def number_error_text(n)
+    return 'integer outside the safe range (|n| > 2^53-1)' if n.is_a?(Integer)
+    return 'number outside the canonical form' unless n.is_a?(Float)
+    return 'non-finite number' unless n.finite?
+    return 'negative zero' if n.zero? && (1.0 / n).negative?
+    return 'integer outside the safe range (|n| > 2^53-1)' if n == n.floor && n.abs > MAX_SAFE
+    return 'number outside the canonical form' if n == n.floor
+    return 'non-integer magnitude below 1e-6 (needs an exponent form; not representable in the canonical decimal form)' if n.abs < 1e-6
+
+    "non-integer number has more than #{MAX_DECIMAL_DIGITS} significant digits"
+  end
+
   def fmt_number(n)
-    raise Malformed, 'number outside the canonical form' unless number_ok?(n)
+    raise Malformed, "canonicalize: #{number_error_text(n)}" unless number_ok?(n)
 
     n.is_a?(Integer) ? n.to_s : fmt_float(n)
   end
@@ -469,8 +485,9 @@ module AtlasPca
     canonicalize(v).dup.force_encoding('UTF-8').b
   end
 
-  def hash_canonical(v)
-    b64e(sha(canon_bytes(v)))
+  # base64url(H(strictCanonical(v))) under `suite` ('sha256', the default, is the bare form every protocol digest uses; 'sha384').
+  def hash_canonical(v, suite = 'sha256')
+    suite == 'sha384' ? b64e(Digest::SHA384.digest(canon_bytes(v))) : b64e(sha(canon_bytes(v)))
   end
 
   # ======================= Merkle (RFC 6962) =======================
@@ -631,13 +648,14 @@ module AtlasPca
 
     def verify(pub, msg, sig)
       return false unless pub.bytesize == 32 && sig.bytesize == 64
-      return false if acceptable_point(pub).nil?
-      return false if acceptable_point(sig.byteslice(0, 32)).nil?
 
       s = sig.byteslice(32, 32).unpack('C*').each_with_index.sum { |b, i| b << (8 * i) }
       return false if s >= L
+      # the cheap library equation first: the pure-Ruby torsion checks (two scalar multiplications each) run only for a
+      # signature that already verifies, so a forged one costs the attacker's CPU nothing extra (TS keys.ts:34-38)
+      return false unless OpenSSL::PKey.new_raw_public_key('ED25519', pub).verify(nil, sig, msg)
 
-      OpenSSL::PKey.new_raw_public_key('ED25519', pub).verify(nil, sig, msg)
+      !acceptable_point(pub).nil? && !acceptable_point(sig.byteslice(0, 32)).nil?
     rescue StandardError
       false
     end
@@ -650,7 +668,7 @@ module AtlasPca
   # hybrid-ed25519-* forms and the SUF-CMA hybrid-nested-ed25519-ml-dsa-65 (PQ half over msg || Ed25519 sig bytes).
   # LESS (less-cat1 / hybrid-ed25519-less-cat1) goes through libatlas_less (AtlasPca::LessFfi, the patched reference C of
   # sdks/pca-less-c; variable-length signature). Suite capability (packages/pca/conformance/SUITES.md): a registered suite
-  # this verifier cannot run — fn-dsa-512 / fn-dsa-1024 (OpenSSL has no FIPS 206), LESS without libatlas_less, or a PQ suite
+  # this verifier cannot run — fn-dsa-512 / fn-dsa-1024 without a registered FN-DSA backend (OpenSSL has no FIPS 206), LESS without libatlas_less, or a PQ suite
   # whose key type the loaded OpenSSL cannot build — fails closed with the distinct reason `unsupported_suite: <alg>`.
   # `alg`/`pq_pk` are SIGNED; `sig`/`pq_sig` are stripped from the signed body.
   ML_DSA_65_PUBLIC_KEY_BYTES = 1952
@@ -669,8 +687,28 @@ module AtlasPca
     'ML-DSA-87' => [2592, 4627],
     'SLH-DSA-SHA2-128f' => [32, 17_088],
     'SLH-DSA-SHA2-256s' => [64, 29_792],
-    'LESS-cat1' => [97_484, 1329] # signature: the MAXIMUM (pq_sig_ok?)
+    'LESS-cat1' => [97_484, 1329], # signature: the MAXIMUM (pq_sig_ok?)
+    'FN-DSA-512' => [897, 666],
+    'FN-DSA-1024' => [1793, 1280]
   }.freeze
+
+  # FN-DSA has no OpenSSL primitive: the core owns this hook and Fndsa.set_falcon_backend fills it (nothing registers at load).
+  # nil == no backend: the suites stay registered but unsupported (unsupported_suite / deny).
+  FNDSA_VERIFIER = [nil]
+  FNDSA_PRIMS = %w[FN-DSA-512 FN-DSA-1024].freeze
+
+  # callable(variant, pk, msg, sig) -> true, or nil to unregister.
+  def register_fndsa_verifier(callable)
+    FNDSA_VERIFIER[0] = callable
+  end
+
+  # Signing seam, same shape as the verifier's: nil (the default) keeps FN-DSA signing refused (UnsupportedSigner); otherwise a Hash
+  # {'sign' => callable(variant, sk, msg, seed32) -> sig bytes, 'keygen' => callable(variant, seed32) -> {'pk','sk'} or nil}.
+  FNDSA_SIGNER = [nil]
+
+  def register_fndsa_signer(signer)
+    FNDSA_SIGNER[0] = signer
+  end
 
   # suite name => [sig byte length, needs pq_pk, needs pq_sig, PQ primitive (OpenSSL key type) or nil, nested]
   SIG_SUITES = {
@@ -685,13 +723,16 @@ module AtlasPca
     'slh-dsa-sha2-256s' => [29_792, true, false, 'SLH-DSA-SHA2-256s', false],
     'hybrid-ed25519-slh-dsa-sha2-256s' => [ED25519_SIGNATURE_BYTES, true, true, 'SLH-DSA-SHA2-256s', false],
     'less-cat1' => [1329, true, false, 'LESS-cat1', false],
-    'hybrid-ed25519-less-cat1' => [ED25519_SIGNATURE_BYTES, true, true, 'LESS-cat1', false]
+    'hybrid-ed25519-less-cat1' => [ED25519_SIGNATURE_BYTES, true, true, 'LESS-cat1', false],
+    'fn-dsa-512' => [666, true, false, 'FN-DSA-512', false],
+    'fn-dsa-1024' => [1280, true, false, 'FN-DSA-1024', false]
   }.freeze
 
   PQ_PRIM_AVAILABLE = {} # rubocop:disable Style/MutableConstant -- memo of the runtime capability probe
 
   # Real capability probe: the loaded OpenSSL can build a raw public key of this type (no version-number gate).
   def pq_prim_available?(prim)
+    return !FNDSA_VERIFIER[0].nil? if FNDSA_PRIMS.include?(prim) # live: a backend can be (un)registered
     return PQ_PRIM_AVAILABLE[prim] if PQ_PRIM_AVAILABLE.key?(prim)
     return PQ_PRIM_AVAILABLE[prim] = LessFfi.available? if prim == LessFfi::KEY_TYPE
 
@@ -726,8 +767,17 @@ module AtlasPca
     pk_len, = PQ_PRIMS[prim]
     return false if pk_len.nil? || pk.bytesize != pk_len || !pq_sig_len_ok?(prim, sig.bytesize)
     return LessFfi.verify(pk, msg, sig) if prim == LessFfi::KEY_TYPE
+    return fndsa_core_verify(prim, pk, msg, sig) if FNDSA_PRIMS.include?(prim)
 
     OpenSSL::PKey.new_raw_public_key(prim, pk).verify(nil, sig, msg)
+  rescue StandardError
+    false
+  end
+
+  # Lengths already checked by the caller; no backend, a raising backend or any non-true answer => deny.
+  def fndsa_core_verify(prim, pk, msg, sig)
+    v = FNDSA_VERIFIER[0]
+    !v.nil? && v.call(prim.downcase, pk, msg, sig) == true
   rescue StandardError
     false
   end
@@ -857,7 +907,7 @@ module AtlasPca
     pq_msg = msg
     if nested
       ed_sig = b64d(sig, ED25519_SIGNATURE_BYTES)
-      return false if ed_sig.nil?
+      return false if ed_sig.nil? # defence in depth: verify_b64u above already decoded it
 
       pq_msg = msg.b + ed_sig
     end
@@ -1096,7 +1146,11 @@ module AtlasPca
     body, err = signable_hop_body(c)
     return "#{label}: #{err}" if body.nil?
 
-    digest = hash_canonical(body)
+    digest = begin
+      hash_canonical(body)
+    rescue StandardError
+      return "#{label}: malformed body" # a body that cannot be canonicalised (a lone surrogate), as capability.ts checkSig
+    end
     bd = c['body_digest']
     return "#{label}: body digest mismatch" if digest != bd || c['id'] != bd
 
@@ -1222,14 +1276,38 @@ module AtlasPca
         return ["#{label}: caveat #{j} altered or reordered", false] if hash_canonical(cc[j]) != hash_canonical(pc[j])
       end
     end
+    # the leaf holds the full append-only list
+    alloc = allocations_monotone_error(chain[-1]['caveats'])
+    return [alloc, false] if alloc
+
     ['', true]
+  end
+
+  # nil when the carried budget allocations never widen down the chain, else the reason.
+  def allocations_monotone_error(caveats)
+    return 'malformed caveats' unless caveats.is_a?(Array)
+
+    prev = Float::INFINITY
+    caveats.each_with_index do |cv, i|
+      next unless cv.is_a?(Hash) && cv['type'] == 'budget_alloc'
+
+      lim = finite_num(cv['limit'])
+      return "budget_alloc caveat #{i}: limit must be a finite number >= 0" if lim.nil? || lim.negative?
+      if lim > prev
+        return "budget_alloc caveat #{i}: allocation #{Predicates.js_number_string(lim)} widens the parent's carried allocation " \
+               "#{Predicates.js_number_string(prev)} (monotone: a child can only allocate <= its parent)"
+      end
+
+      prev = lim
+    end
+    nil
   end
 
   # ======================= wire validation =======================
   TOP_REQUIRED = %w[ver action grant_ref cap_chain plan attestation provenance freshness counter risk_claim
                     aud iat exp sig].freeze
   TOP_OPTIONAL = %w[nonce caution rationale_commitment progress_step prohibition_evidence tool_binding
-                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session].freeze
+                    zk_compliance bond_ref threshold alg pq_pk pq_sig intent intent_session fresh_at].freeze
   ACTION_KEYS = %w[verb resource params_digest reversibility_class].freeze
   PLAN_REQUIRED = %w[root inclusion_proof node_id].freeze
   PROOF_KEYS = %w[index size path].freeze
@@ -1288,6 +1366,9 @@ module AtlasPca
     return false if p.key?('intent') && !intent_wire_error(p['intent']).nil?
     # Intent Layer v2 (SIGNED): the `intent_session` member, when present, passes rule 13's closed wire shape.
     return false if p.key?('intent_session') && !validate_intent_session_wire(p['intent_session']).nil?
+
+    # Consistency token (SIGNED): the `fresh_at` member, when present, passes its closed wire shape (fresh_at.rb).
+    return false if p.key?('fresh_at') && !validate_fresh_at_wire(p['fresh_at']).nil?
 
     th = p['threshold']
     return true unless p.key?('threshold')
@@ -1522,6 +1603,8 @@ module AtlasPca
   INTENT_GOAL_V2_PREFIX = 'pca-intent:v2:'
   # Intent Layer v2 session grants over a COMMITTED map (rule 19): `pca-intent:v2c:<session>:<map_commit>`.
   INTENT_GOAL_V2C_PREFIX = 'pca-intent:v2c:'
+  # Goal binding v3: `pca-intent:v3:<goal_digest>:<policy_digest>` (the signed Goal IR plus the compiled policy).
+  INTENT_GOAL_V3_PREFIX = 'pca-intent:v3:'
   INTENT_GOAL_COMMIT_DOMAIN = "atlas-pca/goal/v1\x00"
   PPM_ONE = 1_000_000
   MAX_INTENT_GOAL_SALT_LEN = 128
@@ -1569,15 +1652,39 @@ module AtlasPca
     hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => goal, 'salt' => goal_salt })
   end
 
+  # A well-formed `approved_goal`: a closed object of exactly `goal_digest` and `policy_digest`, both canonical
+  # base64url of 32 bytes (String or Symbol keys).
+  def approved_goal_ref?(v)
+    return false unless v.is_a?(Hash) && v.length == 2
+
+    r = v.transform_keys(&:to_s)
+    # a String/Symbol key collision leaves one member: refused here, and again by the missing member
+    r.length == 2 && b32?(r['goal_digest']) && b32?(r['policy_digest'])
+  end
+
+  # The goal v3 string. Raises ArgumentError on a malformed digest: never commit to garbage.
+  def intent_goal_v3(ref)
+    raise ArgumentError, 'intent_goal_v3: goal_digest and policy_digest must be canonical base64url (32 bytes)' unless approved_goal_ref?(ref)
+
+    r = ref.transform_keys(&:to_s)
+    "#{INTENT_GOAL_V3_PREFIX}#{r['goal_digest']}:#{r['policy_digest']}"
+  end
+
+  # The goal v3 commitment for a salt (same domain and hash as intent_goal_commit).
+  def intent_goal_commit_v3(ref, goal_salt)
+    hash_canonical({ 'd' => INTENT_GOAL_COMMIT_DOMAIN, 'goal' => intent_goal_v3(ref), 'salt' => goal_salt })
+  end
+
   # A policy Hash with String keys (Symbol keys are accepted too), or nil when `policy` is not a Hash.
   def normalize_intent_policy(policy)
     policy.is_a?(Hash) ? policy.transform_keys(&:to_s) : nil
   end
 
-  # True iff the policy is active: `require` is exactly true, or either threshold key is present.
+  # True iff the policy is active: `require` is exactly true, or a threshold key or `approved_goal` is present.
   def intent_policy_active?(policy)
     pol = normalize_intent_policy(policy)
-    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm'))
+    !pol.nil? && (pol['require'] == true || pol.key?('min_fidelity_ppm') || pol.key?('max_residual_risk_ppm') ||
+                  pol.key?('approved_goal'))
   end
 
   # RAW JSON TEXT as the platform JSON parser of the reference reads it (conformance README "Raw JSON text members":
@@ -1626,11 +1733,19 @@ module AtlasPca
     if (pol.key?('min_fidelity_ppm') && lo.nil?) || (pol.key?('max_residual_risk_ppm') && hi.nil?)
       return [:fail, 'intent policy misconfigured: thresholds must be non-negative safe integers (fail closed)']
     end
+    v3 = pol.key?('approved_goal')
+    if v3 && !approved_goal_ref?(pol['approved_goal'])
+      return [:fail, 'intent policy misconfigured: approved_goal digests must be canonical base64url (32 bytes) (fail closed)']
+    end
     return [:fail, 'this verifier requires an intent binding but the PCActn carries none'] if intent.nil?
 
     commit = root_goal_commit(grant)
     return [:fail, 'the root grant carries no envelope goal commitment to bind the intent to'] if commit.nil?
-    if intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
+    if v3
+      if intent_goal_commit_v3(pol['approved_goal'], intent['goal_salt']) != commit
+        return [:fail, "the root grant's goal commitment does not open to the approved goal and compiled policy (v3)"]
+      end
+    elsif intent_goal_commit(intent['ref'], intent['map_digest'], intent['goal_salt'], session, map_form) != commit
       return [:fail, "intent ref / map_digest / goal_salt do not open the root grant's goal commitment"]
     end
     if lo && intent['fidelity_ppm'] < lo
@@ -1662,15 +1777,32 @@ module AtlasPca
   # proofs}}, layers, acc {state, monitors, receipts, last_seq, sequencer_keys}, wb {artifacts, policy}. The v2 checks
   # (schema, intent_session, layers, accumulators, facts, provenance, classes; see decide_intent_v2) follow `intent`, each
   # reported only when the PCActn carries `intent_session` or a v2 policy is active; allow requires all reported ones.
-  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+  # authorized_plan_roots: Array of the Merkle plan roots this verifier knows the principal authorized (TS authorizedPlanRoots).
+  # Given (even empty) `plan_root_authorized` is enforced; omitted it FAILS unless the explicit opt-out
+  # insecure_skip_plan_root_check: true is set (check then absent = not enforced). authorize passes the skip (it checks its own).
+  # threshold_hook: optional callable taking {'pcactn', 'grant', 'nowEpoch'} and returning {'enforced', 'ok', 'reason'} (the TS
+  # hooks.threshold); a refusal fails the `threshold` check, a hook that is not enforced reports nothing.
+  # attestation_hook (the TS hooks.attestation) and zk_hook (the TS hooks.zk, e.g. AtlasPca::Zk.create_zk_verifier) take the same
+  # context and answer the same shape. An enforced attestation result passes or fails the `attestation` check; not enforced
+  # reports nothing. zk_hook runs only when the PCActn CARRIES `zk_compliance`: an enforced result passes or fails the
+  # `zk_compliance` check, and a carried proof that no hook enforced (no hook, or one that reports not enforced) is refused.
+  def verify_pcactn(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil, fresh_at: nil,
+                    authorized_plan_roots: nil, insecure_skip_plan_root_check: false, pq_pins: nil, threshold_hook: nil,
+                    attestation_hook: nil, zk_hook: nil)
     verify_pcactn_unchecked(pcactn, grant, now: now, audience: audience, allowed_suites: allowed_suites,
-                                           intent_policy: intent_policy, intent_v2: intent_v2)
+                                           intent_policy: intent_policy, intent_v2: intent_v2, fresh_at: fresh_at,
+                                           authorized_plan_roots: authorized_plan_roots,
+                                           insecure_skip_plan_root_check: insecure_skip_plan_root_check, pq_pins: pq_pins,
+                                           threshold_hook: threshold_hook, attestation_hook: attestation_hook, zk_hook: zk_hook)
   rescue StandardError => e
     # TOTAL (R6-05): a residual fault on hostile input is a terminal wire refusal, never an exception.
     Verdict.new(false, { 'wire' => false }, "wire: malformed input (#{e.class})")
   end
 
-  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+  # Every option is passed by verify_pcactn (its only caller): no defaults here.
+  def verify_pcactn_unchecked(pcactn, grant, now:, audience:, allowed_suites:, intent_policy:, intent_v2:, fresh_at:,
+                              authorized_plan_roots:, insecure_skip_plan_root_check:, pq_pins: nil, threshold_hook: nil,
+                              attestation_hook: nil, zk_hook: nil)
     if pcactn.is_a?(String)
       # FIRST: before any parsing (String#bytesize is the raw byte length)
       return Verdict.new(false, { 'wire' => false }, "wire: #{ARTIFACT_SIZE_REASON}") if pcactn.bytesize > MAX_ARTIFACT_BYTES
@@ -1694,12 +1826,21 @@ module AtlasPca
         false
       end
       checks[name] = ok
-      reason = "#{name}: #{why}" if !ok && reason.empty?
+      reason = "#{name}: #{why.respond_to?(:call) ? why.call : why}" if !ok && reason.empty?
     end
 
-    run.call('version', 'unsupported ver') { pcactn['ver'] == 2 }
-    run.call('audience', 'audience mismatch') { pcactn['aud'] == audience }
-    run.call('validity', 'outside validity window') do
+    # The reasons are the reference's (verifyPCActnCore) wording.
+    run.call('version', -> { "unsupported ver #{V2JS.js_str(pcactn['ver'])} (this verifier requires 2)" }) { pcactn['ver'] == 2 }
+    run.call('audience', 'aud does not match this resource server / instance') { pcactn['aud'] == audience }
+    run.call('validity', lambda {
+      iat = pcactn['iat']
+      exp = pcactn['exp']
+      if !(exp > iat) then 'exp must be greater than iat'
+      elsif exp - iat > MAX_LIFETIME_MS then "lifetime exceeds #{MAX_LIFETIME_MS} ms"
+      elsif iat > now + MAX_SKEW_MS then 'iat is in the future (clock skew)'
+      else 'the PCActn has expired'
+      end
+    }) do
       iat = pcactn['iat']
       exp = pcactn['exp']
       exp > iat && exp - iat <= MAX_LIFETIME_MS && iat <= now + MAX_SKEW_MS && now <= exp
@@ -1715,8 +1856,14 @@ module AtlasPca
         false
       else
         gi = grant['issuer']
-        verify_chain(chain, gi, gi.is_a?(String), allowed_suites, nil, grant).last # chain[0] == grant was checked above
+        verify_chain(chain, gi, gi.is_a?(String), allowed_suites, pq_pins, grant).last # chain[0] == grant was checked above
       end
+    end
+
+    # A PQ pin for the root issuer says its grants are post-quantum protected: a classical root naming it is refused (the full verifier's
+    # pq_pin rule, same reason). The chain check above is unchanged: it only constrains non-Ed25519 roots. No pin for the issuer: no check.
+    if pq_pins.is_a?(Hash) && grant.is_a?(Hash) && (grant['alg'] || 'ed25519') == 'ed25519' && pq_pins.key?(grant['issuer'])
+      run.call('pq_pin', 'the grant issuer is pinned to a post-quantum key; a classical grant is refused') { false }
     end
 
     # grant_ref_bound (normative): the signed grant_ref MUST be a non-empty string byte-equal to the id of the ROOT
@@ -1734,6 +1881,16 @@ module AtlasPca
       verify_inclusion(plan['root'], plan['inclusion_proof'], plan_leaf(plan['node_id'], pcactn['action'], cond))
     end
 
+    if authorized_plan_roots.nil?
+      unless insecure_skip_plan_root_check == true
+        run.call('plan_root_authorized', 'no authorized plan is configured for this verifier (set authorizedPlanRoots, or the explicit insecureSkipPlanRootCheck)') { false }
+      end
+    else
+      run.call('plan_root_authorized', 'the plan root has not been authorized by the principal') do
+        authorized_plan_roots.is_a?(Array) && authorized_plan_roots.include?(plan['root'])
+      end
+    end
+
     run.call('leaf_signature', 'signature does not verify under the leaf holder key') do
       if chain.empty?
         false
@@ -1745,7 +1902,7 @@ module AtlasPca
       end
     end
 
-    run.call('counter', 'not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
+    run.call('counter_format', 'missing or not a non-negative safe integer') { safe_int?(pcactn['counter']) && pcactn['counter'] >= 0 }
 
     # Intent Layer M2: `intent` check (present iff the PCActn carries `intent` or the policy is active).
     # Intent Layer v2 (rule 13 amends rule 12 step 2): a wire-valid `intent_session` makes the goal the v2 session goal.
@@ -1755,17 +1912,45 @@ module AtlasPca
 
     CHECK_ORDER.each { |k| checks[k] = false unless checks.key?(k) }
     ordered = CHECK_ORDER.to_h { |k| [k, checks[k]] }
+    ordered['plan_root_authorized'] = checks['plan_root_authorized'] if checks.key?('plan_root_authorized')
+    ordered['pq_pin'] = checks['pq_pin'] if checks.key?('pq_pin') # present only when the caller's pins name a classical root's issuer
+    # The optional hooks, tri-state: enforced+ok = pass, enforced+refused = fail (its reason), not enforced = no check
+    # reported (like a skipped plan_root_authorized). Absent: nothing is added, so the verdict is byte-identical to before.
+    # True iff the hook enforced.
+    run_hook = lambda do |name, hook|
+      res = hook.nil? ? nil : hook.call({ 'pcactn' => pcactn, 'grant' => grant, 'nowEpoch' => now })
+      next false unless res.is_a?(Hash) && res['enforced'] == true
+
+      ok = res['ok'] == true
+      ordered[name] = ok
+      reason = "#{name}: #{res['reason'] || 'rejected'}" if !ok && reason.empty?
+      true
+    end
+    run_hook.call('attestation', attestation_hook)
+    run_hook.call('threshold', threshold_hook)
+    # fail closed at the core: a carried proof that no zk verifier enforced never passes unchecked
+    if pcactn.key?('zk_compliance') && !run_hook.call('zk_compliance', zk_hook)
+      ordered['zk_compliance'] = false
+      reason = 'zk_compliance: PCActn carries a zk_compliance proof but no zk verifier enforced it (fail closed): configure hooks.zk or do not present a proof' if reason.empty?
+    end
     unless intent_status == :absent
       ordered['intent'] = intent_status == :pass
       reason = "intent: #{intent_why}" if intent_status == :fail && reason.empty?
     end
     # Intent Layer v2: schema (14), intent_session (13), layers (V5), accumulators (15), facts / provenance / classes
     # (16-18), each reported only when the PCActn carries `intent_session` or a v2 policy is active.
-    decide_intent_v2(pcactn, grant, intent_v2, now)['checks'].each do |c|
+    v2 = decide_intent_v2(pcactn, grant, intent_v2, now)
+    # Consistency token: `fresh_at`, after the intent checks; reported only when the PCActn carries the member, a side-carried
+    # token is read, or the policy requires one (otherwise absent: byte-identical to before).
+    fa = decide_fresh_at(pcactn, fresh_at, now)
+    v2_checks = fa.nil? ? v2['checks'] : v2['checks'] + [fa]
+    all_reasons = fold_escalation(reason.empty? ? [] : [reason], v2_checks, {})['reasons']
+    v2_checks.each do |c|
       ordered[c['name']] = c['ok'] ? true : false
       reason = "#{c['name']}: #{c['reason'] || 'rejected'}" if !c['ok'] && reason.empty?
     end
-    Verdict.new(ordered.values.all?, ordered, reason)
+    degraded = v2['legacy_model_polarity'] ? { 'tighten' => "model_polarity 'legacy': a grant reads a model-derived value in where (rule 21)" } : nil
+    Verdict.new(ordered.values.all?, ordered, reason, all_reasons, degraded)
   end
 end
 
@@ -1777,3 +1962,333 @@ require_relative 'atlas_pca/predicates'
 require_relative 'atlas_pca/intent_layers'
 require_relative 'atlas_pca/intent_wb'
 require_relative 'atlas_pca/intent_v2'
+require_relative 'atlas_pca/actions'
+require_relative 'atlas_pca/actions_registry'
+# 0.5: the ternary decision, escalation answers and the full authorize() pipeline (opt-in; verify_pcactn is unchanged).
+require_relative 'atlas_pca/decision'
+require_relative 'atlas_pca/forbid_certificate'
+require_relative 'atlas_pca/policy_link'
+require_relative 'atlas_pca/fresh_at'
+require_relative 'atlas_pca/pca_grant'
+require_relative 'atlas_pca/blueprint'
+require_relative 'atlas_pca/k4'
+require_relative 'atlas_pca/runtime_claim'
+require_relative 'atlas_pca/a2a'
+require_relative 'atlas_pca/workflow'
+require_relative 'atlas_pca/readside'
+require_relative 'atlas_pca/read_vault'
+require_relative 'atlas_pca/lease'
+require_relative 'atlas_pca/break_glass'
+require_relative 'atlas_pca/missing_context'
+require_relative 'atlas_pca/policy_classes'
+require_relative 'atlas_pca/obligations'
+require_relative 'atlas_pca/undo'
+require_relative 'atlas_pca/k3'
+require_relative 'atlas_pca/escalation'
+require_relative 'atlas_pca/approval'
+require_relative 'atlas_pca/passport'
+require_relative 'atlas_pca/ledger'
+require_relative 'atlas_pca/optimistic'
+require_relative 'atlas_pca/intent_history'
+require_relative 'atlas_pca/mesh'
+require_relative 'atlas_pca/mesh_witness'
+require_relative 'atlas_pca/mesh_issue'
+require_relative 'atlas_pca/pq_quorum'
+require_relative 'atlas_pca/safety_certificate'
+require_relative 'atlas_pca/store_errors'
+require_relative 'atlas_pca/ledger_store'
+require_relative 'atlas_pca/bond_store'
+require_relative 'atlas_pca/budget_ledger'
+require_relative 'atlas_pca/optimistic_adjudication'
+require_relative 'atlas_pca/bond_settlement'
+require_relative 'atlas_pca/revocation_staleness'
+require_relative 'atlas_pca/assurance'
+require_relative 'atlas_pca/arg_provenance'
+require_relative 'atlas_pca/risk'
+require_relative 'atlas_pca/prohibitions'
+require_relative 'atlas_pca/contracts'
+require_relative 'atlas_pca/taint'
+require_relative 'atlas_pca/beacons'
+require_relative 'atlas_pca/authorize'
+require_relative 'atlas_pca/verify_verdict'
+require_relative 'atlas_pca/policy_vm'
+require_relative 'atlas_pca/atomic_kv'
+require_relative 'atlas_pca/plan_lifecycle'
+require_relative 'atlas_pca/operations'
+require_relative 'atlas_pca/stepup'
+require_relative 'atlas_pca/store_conformance'
+require_relative 'atlas_pca/caveat_lang'
+require_relative 'atlas_pca/provenance_gate'
+require_relative 'atlas_pca/refusal_help'
+require_relative 'atlas_pca/protect'
+require_relative 'atlas_pca/agent'
+require_relative 'atlas_pca/hash_suite'
+require_relative 'atlas_pca/pq'
+require_relative 'atlas_pca/approval_channels'
+require_relative 'atlas_pca/server_guard'
+require_relative 'atlas_pca/durable_state'
+require_relative 'atlas_pca/undo_stores'
+require_relative 'atlas_pca/undo_coordinator'
+require_relative 'atlas_pca/wire_checks'
+require_relative 'atlas_pca/approvals'
+require_relative 'atlas_pca/reference_helpers'
+require_relative 'atlas_pca/chain_compact'
+require_relative 'atlas_pca/policy_templates'
+require_relative 'atlas_pca/discovery'
+require_relative 'atlas_pca/signers_more'
+require_relative 'atlas_pca/agent_native'
+require_relative 'atlas_pca/catalog_builtin'
+require_relative 'atlas_pca/catalog'
+require_relative 'atlas_pca/policy_sim'
+require_relative 'atlas_pca/budget_forecast'
+require_relative 'atlas_pca/reputation'
+require_relative 'atlas_pca/console'
+require_relative 'atlas_pca/session'
+require_relative 'atlas_pca/policy_debug'
+require_relative 'atlas_pca/ha'
+require_relative 'atlas_pca/frontier_signals'
+require_relative 'atlas_pca/objective_risk'
+require_relative 'atlas_pca/progress'
+require_relative 'atlas_pca/attestation'
+require_relative 'atlas_pca/attest_pq_software'
+require_relative 'atlas_pca/attest_puf'
+require_relative 'atlas_pca/attest_allowlist'
+require_relative 'atlas_pca/attest_maa'
+require_relative 'atlas_pca/attest_nvidia'
+require_relative 'atlas_pca/attest_vendors'
+require_relative 'atlas_pca/semantic_threshold'
+require_relative 'atlas_pca/passport_api'
+require_relative 'atlas_pca/beacons_api'
+require_relative 'atlas_pca/action_schema_api'
+require_relative 'atlas_pca/intent_artifacts'
+require_relative 'atlas_pca/intent_constants'
+require_relative 'atlas_pca/nl_approval'
+require_relative 'atlas_pca/frost_nonce_store'
+require_relative 'atlas_pca/frost_net'
+require_relative 'atlas_pca/frost_pq_api'
+require_relative 'atlas_pca/frost_dkg'
+require_relative 'atlas_pca/frost_dkg_channel'
+require_relative 'atlas_pca/frost_dkg_tls'
+require_relative 'atlas_pca/intent_signed'
+require_relative 'atlas_pca/frost_net_http'
+require_relative 'atlas_pca/facade'
+require_relative 'atlas_pca/oauth'
+require_relative 'atlas_pca/jose'
+require_relative 'atlas_pca/txn_tokens'
+require_relative 'atlas_pca/erc7715'
+require_relative 'atlas_pca/events'
+require_relative 'atlas_pca/dpop'
+require_relative 'atlas_pca/oidc'
+require_relative 'atlas_pca/idjag'
+require_relative 'atlas_pca/sdjwt'
+require_relative 'atlas_pca/vc'
+require_relative 'atlas_pca/gnap'
+require_relative 'atlas_pca/scim'
+require_relative 'atlas_pca/webauthn'
+require_relative 'atlas_pca/authzen'
+require_relative 'atlas_pca/ciba'
+require_relative 'atlas_pca/spiffe'
+require_relative 'atlas_pca/revoke'
+require_relative 'atlas_pca/rotate'
+require_relative 'atlas_pca/signals'
+require_relative 'atlas_pca/grants'
+require_relative 'atlas_pca/grants_list'
+require_relative 'atlas_pca/grants_service'
+require_relative 'atlas_pca/grants_shadow'
+require_relative 'atlas_pca/ratchet_group'
+require_relative 'atlas_pca/ratchet_accumulator'
+require_relative 'atlas_pca/ratchet'
+require_relative 'atlas_pca/payments'
+require_relative 'atlas_pca/ap2'
+require_relative 'atlas_pca/agentcard_card'
+require_relative 'atlas_pca/acp'
+require_relative 'atlas_pca/agentcard'
+require_relative 'atlas_pca/intent_v2'
+require_relative 'atlas_pca/mcp'
+require_relative 'atlas_pca/scitt'
+require_relative 'atlas_pca/scitt_log'
+require_relative 'atlas_pca/notary'
+require_relative 'atlas_pca/grants'
+require_relative 'atlas_pca/grants_list'
+require_relative 'atlas_pca/grants_service'
+require_relative 'atlas_pca/grants_shadow'
+require_relative 'atlas_pca/ratchet_group'
+require_relative 'atlas_pca/ratchet_accumulator'
+require_relative 'atlas_pca/ratchet'
+require_relative 'atlas_pca/payments'
+require_relative 'atlas_pca/ap2'
+require_relative 'atlas_pca/agentcard_card'
+require_relative 'atlas_pca/acp'
+require_relative 'atlas_pca/agentcard'
+require_relative 'atlas_pca/mcp'
+require_relative 'atlas_pca/scitt'
+require_relative 'atlas_pca/scitt_log'
+require_relative 'atlas_pca/notary'
+require_relative 'atlas_pca/intent_omega'
+require_relative 'atlas_pca/intent_policy'
+require_relative 'atlas_pca/intent_region'
+require_relative 'atlas_pca/intent_slots'
+require_relative 'atlas_pca/intent_metrics'
+require_relative 'atlas_pca/intent_learner'
+require_relative 'atlas_pca/intent_mapkit'
+require_relative 'atlas_pca/intent_map'
+require_relative 'atlas_pca/intent_map_commit'
+require_relative 'atlas_pca/intent_clopper'
+require_relative 'atlas_pca/intent_ramp'
+require_relative 'atlas_pca/intent_world'
+require_relative 'atlas_pca/intent_effects'
+require_relative 'atlas_pca/intent_runtime'
+require_relative 'atlas_pca/intent_ux'
+require_relative 'atlas_pca/intent_render'
+require_relative 'atlas_pca/intent_witnesses'
+require_relative 'atlas_pca/intent_profile'
+require_relative 'atlas_pca/intent_multi'
+require_relative 'atlas_pca/intent_multi_agg'
+require_relative 'atlas_pca/intent_layers_wallet'
+require_relative 'atlas_pca/intent_statement'
+require_relative 'atlas_pca/intent_schema'
+require_relative 'atlas_pca/intent_trajectory'
+require_relative 'atlas_pca/intent_required'
+require_relative 'atlas_pca/intent_frames'
+require_relative 'atlas_pca/intent_jit'
+require_relative 'atlas_pca/intent_classifier'
+require_relative 'atlas_pca/intent_provenance'
+require_relative 'atlas_pca/intent_compilers'
+require_relative 'atlas_pca/intent_refine'
+require_relative 'atlas_pca/analyzer'
+require_relative 'atlas_pca/evidence_verify'
+require_relative 'atlas_pca/explain'
+require_relative 'atlas_pca/evidence'
+require_relative 'atlas_pca/compliance'
+require_relative 'atlas_pca/control_evals'
+require_relative 'atlas_pca/dlp'
+require_relative 'atlas_pca/immune'
+require_relative 'atlas_pca/dataflow'
+require_relative 'atlas_pca/explain'
+require_relative 'atlas_pca/harness'
+require_relative 'atlas_pca/invariants'
+require_relative 'atlas_pca/otel'
+require_relative 'atlas_pca/policy_bridge'
+require_relative 'atlas_pca/policy_ci'
+require_relative 'atlas_pca/policy_bridge_cel'
+require_relative 'atlas_pca/schema'
+require_relative 'atlas_pca/siem'
+require_relative 'atlas_pca/goal_error'
+require_relative 'atlas_pca/goal_js'
+require_relative 'atlas_pca/goal_fmt'
+require_relative 'atlas_pca/goal_codec'
+require_relative 'atlas_pca/goal_digests'
+require_relative 'atlas_pca/goal_crc'
+require_relative 'atlas_pca/goal_normalize'
+require_relative 'atlas_pca/goal_kernel'
+require_relative 'atlas_pca/goal_refsem'
+require_relative 'atlas_pca/goal_compiler'
+require_relative 'atlas_pca/goal_binding'
+require_relative 'atlas_pca/goal_sign'
+require_relative 'atlas_pca/goal_card'
+require_relative 'atlas_pca/goal_selectors'
+require_relative 'atlas_pca/goal_ontology'
+require_relative 'atlas_pca/goal_ontologies_data'
+require_relative 'atlas_pca/goal_ontologies'
+require_relative 'atlas_pca/goal_examples'
+require_relative 'atlas_pca/goal_interpret'
+require_relative 'atlas_pca/goal_disambiguate'
+require_relative 'atlas_pca/goal_drift'
+require_relative 'atlas_pca/goal_legacy'
+require_relative 'atlas_pca/goal_nversion'
+require_relative 'atlas_pca/goal_precedent'
+require_relative 'atlas_pca/goal_review'
+require_relative 'atlas_pca/goal_roundtrip'
+require_relative 'atlas_pca/goal_bench'
+require_relative 'atlas_pca/fetch'
+require_relative 'atlas_pca/adapters'
+require_relative 'atlas_pca/openai'
+require_relative 'atlas_pca/anthropic'
+require_relative 'atlas_pca/rails'
+require_relative 'atlas_pca/attest_eat'
+require_relative 'atlas_pca/a2a_binding'
+require_relative 'atlas_pca/langchain'
+require_relative 'atlas_pca/connect'
+require_relative 'atlas_pca/oprf'
+require_relative 'atlas_pca/wallet'
+require_relative 'atlas_pca/wallet_card'
+require_relative 'atlas_pca/wallet_pricing'
+require_relative 'atlas_pca/wallet_population'
+require_relative 'atlas_pca/wallet_delivery'
+require_relative 'atlas_pca/wallet_channel'
+require_relative 'atlas_pca/wallet_handlers'
+require_relative 'atlas_pca/sandbox'
+require_relative 'atlas_pca/sandbox_egress'
+require_relative 'atlas_pca/connectors'
+require_relative 'atlas_pca/webbotauth'
+require_relative 'atlas_pca/testing'
+require_relative 'atlas_pca/gateway'
+require_relative 'atlas_pca/gateway'
+require_relative 'atlas_pca/doctor'
+require_relative 'atlas_pca/vdf'
+require_relative 'atlas_pca/frost'
+require_relative 'atlas_pca/pq_threshold'
+require_relative 'atlas_pca/pq_threshold_experimental'
+require_relative 'atlas_pca/aggsig'
+require_relative 'atlas_pca/store_conformance_model'
+require_relative 'atlas_pca/store_conformance_runner'
+require_relative 'atlas_pca/store_conformance_profiles'
+require_relative 'atlas_pca/store_conformance_load'
+require_relative 'atlas_pca/store_conformance_cli'
+require_relative 'atlas_pca/ciba_conformance'
+require_relative 'atlas_pca/openai_agents'
+require_relative 'atlas_pca/a2a_card'
+require_relative 'atlas_pca/actions_compat'
+require_relative 'atlas_pca/actions_selector'
+require_relative 'atlas_pca/actions_confirmation'
+require_relative 'atlas_pca/actions_templates_data'
+require_relative 'atlas_pca/actions_templates'
+require_relative 'atlas_pca/actions_approval_profiles'
+require_relative 'atlas_pca/actions_idpattern'
+require_relative 'atlas_pca/actions_effective'
+require_relative 'atlas_pca/actions_diff'
+require_relative 'atlas_pca/actions_evolve'
+require_relative 'atlas_pca/actions_pack'
+require_relative 'atlas_pca/actions_derive'
+require_relative 'atlas_pca/actions_review'
+require_relative 'atlas_pca/actions_transparency'
+require_relative 'atlas_pca/actions_undo'
+require_relative 'atlas_pca/actions_lint'
+require_relative 'atlas_pca/actions_sync'
+require_relative 'atlas_pca/actions_builtin_data'
+require_relative 'atlas_pca/actions_builtin'
+require_relative 'atlas_pca/actions_build'
+require_relative 'atlas_pca/actions_render'
+require_relative 'atlas_pca/actions_author'
+require_relative 'atlas_pca/actions_test_runner'
+require_relative 'atlas_pca/actions_import_common'
+require_relative 'atlas_pca/actions_import_rules_data'
+require_relative 'atlas_pca/actions_import_openapi'
+require_relative 'atlas_pca/actions_import_mcp'
+require_relative 'atlas_pca/actions_import_jsonschema'
+require_relative 'atlas_pca/actions_import_asyncapi'
+require_relative 'atlas_pca/actions_import_graphql'
+require_relative 'atlas_pca/actions_import_grpc'
+require_relative 'atlas_pca/actions_import_jsre'
+require_relative 'atlas_pca/actions_import_suggest'
+require_relative 'atlas_pca/actions_import_model'
+require_relative 'atlas_pca/actions_import_pipeline'
+require_relative 'atlas_pca/actions_import_eval'
+require_relative 'atlas_pca/llamaindex'
+require_relative 'atlas_pca/actions_rules'
+require_relative 'atlas_pca/actions_hosted'
+require_relative 'atlas_pca/actions_yaml_emit'
+require_relative 'atlas_pca/actions_yaml_load'
+require_relative 'atlas_pca/control_evals_example'
+require_relative 'atlas_pca/reference_names'
+require_relative 'atlas_pca/core_small'
+require_relative 'atlas_pca/objective_binding'
+require_relative 'atlas_pca/signers_siblings'
+require_relative 'atlas_pca/ledger_sign'
+require_relative 'atlas_pca/bond_pool'
+require_relative 'atlas_pca/optimistic_open'
+require_relative 'atlas_pca/durable_open'
+require_relative 'atlas_pca/entropy'
+require_relative 'atlas_pca/zk_ceremony'
+require_relative 'atlas_pca/zk_bundled'
+require_relative 'atlas_pca/zk'

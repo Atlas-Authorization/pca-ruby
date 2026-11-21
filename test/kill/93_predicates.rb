@@ -477,7 +477,7 @@ module MutationKill
     mr = Pred.mr
     cx = Pred.rctx
     AtlasPca.evaluate_predicates(Pred.where_pred([mr] * 64), cx)['allowed'] == true &&
-      AtlasPca.evaluate_predicates(Pred.where_pred([mr] * 65), cx) == { 'allowed' => false, 'reason' => 'no predicate permits r on /' } &&
+      AtlasPca.evaluate_predicates(Pred.where_pred([mr] * 65), cx) == { 'allowed' => false, 'reason' => 'action.verb matches "r" not satisfied for r on /' } &&
       AtlasPca.evaluate_predicates(Pred.where_pred([mr] * 64), cx)['allowed'] == true &&
       AtlasPca.evaluate_predicates([{ 'verb' => 'x' }] + Pred.where_pred([mr] * 40) + Pred.where_pred([mr] * 30), cx)['allowed'] == true &&
       AtlasPca.evaluate_predicates(Pred.where_pred([mr] * 40 + [Pred.cf]) + Pred.where_pred([mr] * 30), cx)['allowed'] == false &&

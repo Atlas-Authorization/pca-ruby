@@ -82,4 +82,16 @@ module MutationKill
       bad.nil?
     end
   end
+
+  # v2 verb `confirmation` shape (confirmationShapeError of action-schema.ts): exact members, canonical digests / sig, sorted trait ids.
+  t('action schema: confirmation shape') do
+    next true if ActionSchemaDiff.skip?
+    d = 'A' * 43
+    c = { 'def_digest' => d, 'traits_digest' => d, 'facts_digest' => d, 'final_traits' => %w[pca.bulk pca.irreversible], 'dismissed' => [{ 'trait' => 'pca.bulk', 'reason' => 'x' }],
+          'reviewer_kid' => 'k', 'ts' => 0, 'sig' => 'A' * 86 }
+    e = ->(x) { AtlasPca::IntentV2.send(:confirmation_shape_error, x) }
+    e.(c).nil? && e.(c.merge('x' => 1)) == "confirmation: unknown member 'x'" && !e.(c.merge('sig' => 'A' * 85)).nil? &&
+      e.(c.merge('final_traits' => %w[pca.irreversible pca.bulk])) == 'confirmation: final_traits must be sorted and distinct' &&
+      !e.(c.merge('dismissed' => [{ 'trait' => 'pca.bulk', 'reason' => '' }])).nil? && !e.(c.merge('ts' => -1)).nil? && !e.([]).nil?
+  end
 end

@@ -1,0 +1,40 @@
+name: FN-DSA (libfndsa)
+
+# AtlasPca::FndsaNative: real FN-DSA through ffi over libfndsa (Pornin fn-dsa 0.4.0, built here from the flagship crate): 480-case corpus + known-answer replay.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fndsa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (the flagship checkout, which carries the lattice crate)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --layout
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: ffi
+        run: gem install ffi --no-document
+      - name: libfndsa (cargo build --features capi)
+        run: echo "ATLAS_PCA_LIBFNDSA=$(.github/scripts/build-libfndsa.sh "$RUNNER_TEMP/fndsa" "$RUNNER_TEMP/pca-flagship/packages/pca-fndsa-wasm/crate" | tail -1)/libfndsa.so" >> "$GITHUB_ENV"
+      - name: FN-DSA replay
+        env:
+          ATLAS_PCA_LIBFNDSA_REQUIRED: '1'
+        run: ruby -Ilib -Itest -e "ARGV.each { |f| require File.expand_path(f) }" test/test_ref_fndsa.rb test/test_fndsa_native.rb test/test_fndsa_core.rb test/test_fndsa_e2e.rb
+      - name: Producer vectors, fn-dsa cases byte-exact through libfndsa
+        env:
+          ATLAS_PCA_LIBFNDSA_REQUIRED: '1'
+        run: ruby -Ilib test/test_agent_producer.rb -n test_fndsa_vectors_with_libfndsa

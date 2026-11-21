@@ -112,8 +112,8 @@ module MutationKill
 
     def verdict(c, got)
       want = c['expect']
-      # the reference returns [] for an unknown / missing monitor kind; this verifier raises (monitor_decl_error refuses the kind first)
-      return nil if c['fn'] == 'states' && want == [] && got.to_s.include?('StrictError')
+      # an unknown / missing monitor kind falls out of the reference switch (undefined, serialized as []); here it is nil
+      return nil if c['fn'] == 'states' && want == [] && (got.nil? || got.to_s.include?('StrictError'))
       return nil if DiffUtil.norm(got) == DiffUtil.norm(want)
       return nil if DiffUtil.pq_case?(c['in'])
 

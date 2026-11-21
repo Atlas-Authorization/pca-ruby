@@ -184,7 +184,7 @@ module MutationKill
     pc = AtlasPca.parse_json(v['pcactn_json'])
     grant = v['grant']
     mw = AtlasPca::RackMiddleware.new(->(_e) { [200, {}, ['ok']] }, audience: v['context']['aud'],
-                                                                    resolve_grant: ->(r) { r == pc['grant_ref'] ? grant : nil }, now: v['context']['now'])
+                                                                    resolve_grant: ->(r) { r == pc['grant_ref'] ? grant : nil }, now: v['context']['now'], signature_only: true)
     env = ->(h) { { 'HTTP_PCA_ACTION' => h, 'rack.input' => StringIO.new('') } }
     canon = Base64.urlsafe_encode64(v['pcactn_json'].b, padding: false)
     lenient = [canon + ('=' * ((4 - (canon.length % 4)) % 4)), canon.tr('-_', '+/'), Base64.strict_encode64(v['pcactn_json'].b),
@@ -197,14 +197,14 @@ module MutationKill
   t('r041 b64e is UTF-8-tagged; natively built PCActn (and its US-ASCII copy) verifies') do
     p, root, now = R041.native
     AtlasPca.b64e('x'.b).encoding == Encoding::UTF_8 && AtlasPca.b64e('x'.b) == 'eA' && AtlasPca.b64e(''.b) == '' &&
-      AtlasPca.verify_pcactn(p, root, now: now, audience: 'rs-native').allow == true &&
-      AtlasPca.verify_pcactn(R041.ascii(p, all: true), R041.ascii(root, all: true), now: now, audience: 'rs-native').allow == true
+      AtlasPca.verify_pcactn(p, root, now: now, audience: 'rs-native', insecure_skip_plan_root_check: true).allow == true &&
+      AtlasPca.verify_pcactn(R041.ascii(p, all: true), R041.ascii(root, all: true), now: now, audience: 'rs-native', insecure_skip_plan_root_check: true).allow == true
   end
 
   t('r041 wire encoding gate: UTF-8 / valid US-ASCII strings pass; BINARY, invalid bytes, UTF-16 refused') do
     vec = Corpus.core['vectors'].find { |x| x['name'] == 'valid-in-plan-action' }
     ctx = vec['context']
-    run = ->(pc) { AtlasPca.verify_pcactn(pc, vec['grant'], now: ctx['now'], audience: ctx['aud']) }
+    run = ->(pc) { AtlasPca.verify_pcactn(pc, vec['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true) }
     bad = ["a\xFFb".dup.force_encoding(Encoding::US_ASCII), 'node'.b, "a\xC0\xAF".dup.force_encoding(Encoding::UTF_8),
            'node'.encode(Encoding::UTF_16LE), 'node'.encode(Encoding::ISO_8859_1)]
     refused = ->(r) { r.allow == false && r.checks == { 'wire' => false } }

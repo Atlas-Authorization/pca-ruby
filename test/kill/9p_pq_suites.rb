@@ -25,6 +25,9 @@ module MutationKill
     # primitive => [public key bytes, signature bytes (LESS: the maximum)]
     PRIMS = { 'ML-DSA-65' => [1952, 3309], 'ML-DSA-87' => [2592, 4627], 'SLH-DSA-SHA2-128f' => [32, 17_088],
               'SLH-DSA-SHA2-256s' => [64, 29_792], 'LESS-cat1' => [97_484, 1329] }.freeze
+    # FN-DSA (Falcon): no OpenSSL primitive, registered but never supported here; written out too (suite => [sig, needs pq_pk, needs pq_sig, prim, nested])
+    FNDSA_SUITES = { 'fn-dsa-512' => [666, true, false, 'FN-DSA-512', false], 'fn-dsa-1024' => [1280, true, false, 'FN-DSA-1024', false] }.freeze
+    FNDSA_PRIMS = { 'FN-DSA-512' => [897, 666], 'FN-DSA-1024' => [1793, 1280] }.freeze
     REGISTERED = %w[ed25519 ml-dsa-65 hybrid-ed25519-ml-dsa-65 hybrid-nested-ed25519-ml-dsa-65 slh-dsa-sha2-128f
                     hybrid-ed25519-slh-dsa-sha2-128f ml-dsa-87 hybrid-ed25519-ml-dsa-87 slh-dsa-sha2-256s
                     hybrid-ed25519-slh-dsa-sha2-256s fn-dsa-512 fn-dsa-1024 less-cat1 hybrid-ed25519-less-cat1].freeze
@@ -48,8 +51,8 @@ module MutationKill
     end
 
     def tables
-      return 'SIG_SUITES' unless AtlasPca::SIG_SUITES == SUITES.to_h { |a, (sl, npk, _, nsg, prim)| [a, [sl, npk, nsg, prim, a.start_with?('hybrid-nested')]] }
-      return 'PQ_PRIMS' unless AtlasPca::PQ_PRIMS == PRIMS
+      return 'SIG_SUITES' unless AtlasPca::SIG_SUITES == SUITES.to_h { |a, (sl, npk, _, nsg, prim)| [a, [sl, npk, nsg, prim, a.start_with?('hybrid-nested')]] }.merge(FNDSA_SUITES)
+      return 'PQ_PRIMS' unless AtlasPca::PQ_PRIMS == PRIMS.merge(FNDSA_PRIMS)
       return 'REGISTERED_SUITES' unless AtlasPca::REGISTERED_SUITES == REGISTERED
       return 'constants' unless [AtlasPca::ML_DSA_65_PUBLIC_KEY_BYTES, AtlasPca::ML_DSA_65_SIGNATURE_BYTES, AtlasPca::ED25519_SIGNATURE_BYTES] == [1952, 3309, 64]
       return 'UNSUPPORTED_SUITE' unless AtlasPca::UNSUPPORTED_SUITE == 'unsupported_suite'

@@ -8,6 +8,7 @@ require 'atlas_pca/rack_middleware'
 require_relative 'support/corpus'
 Dir[File.join(__dir__, 'kill', '*.rb')].sort.each { |f| load f }
 
+$mn_verbose = true # the oracle leaves this off: a mutant's failing test is the expected outcome
 fails = 0
 skipped = Hash.new(0)
 supported = AtlasPca.supported_suites

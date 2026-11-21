@@ -1,0 +1,57 @@
+[
+ {
+  "file": "lib/atlas_pca/intent_v2.rb",
+  "fn": "monitor_states",
+  "line": "w = int?(m['within']) ? ival(m['within']) : 0",
+  "occurrence": 1,
+  "mutant": "str-empty: 'within' => ''",
+  "lineno": 1134,
+  "evidence": "RUN_ERROR(timeout)",
+  "racy": true,
+  "reason": "MECHANISM: in the mutant the condition still reads the real m['within'] (int? true for a responds_within monitor), but the value is read from m[''], which a monitor never has, so ival(nil) is nil and w = nil; `(1..w)` is then the endless range (1..nil) and `.map { |i| \"pending:#{i}\" }` appends one fresh String per iteration with no bound, so memory grows until the address-space cap and the process spends its whole limit in allocation retries (no test can complete the call). UNMUTATED: for an Integer within, (1..w) is finite (w <= 2**53-1 is bounded by int?, and the monitors under test use w <= 3), so the same tests finish in milliseconds under the same limits. `racy`: where the allocation failure reaches a test first the mutant is an ordinary kill, which the merge then requires to be plainly killed in that run."
+ },
+ {
+  "file": "lib/atlas_pca/attest/nvidia.rb",
+  "fn": "parse_nvidia_spdm_evidence",
+  "line": "o = body_start + size",
+  "occurrence": 1,
+  "mutant": "stmt-delete: o = body_start + size => nil",
+  "lineno": 81,
+  "evidence": "RUN_ERROR(timeout)",
+  "racy": true,
+  "reason": "MECHANISM: that statement is the only advance of the cursor o in `while o < rec_end` (the measurement-block loop). Deleted, o keeps its value 8 (or the previous block's start) after every block, so `o < rec_end` stays true, the same block is parsed again and `measurements << {...}` appends a fresh Hash with a fresh digest String each time: an unbounded loop that grows a live array until memory is exhausted (the raise checks inside the loop pass because the same bytes are valid each time), so no test completes the call. UNMUTATED: o advances by 4 + size >= 7 per block and the loop ends at rec_end, so the same tests finish in milliseconds. `racy`: where a test-level deadline or allocation failure reaches a test first the mutant is an ordinary kill, which the merge then requires to be plainly killed in that run."
+ },
+ {
+  "file": "lib/atlas_pca/sigstore_bundle.rb",
+  "fn": "kids",
+  "line": "o = c.end_",
+  "occurrence": 1,
+  "mutant": "stmt-delete: o = c.end_ => nil",
+  "lineno": 199,
+  "evidence": "RUN_ERROR(timeout)",
+  "racy": true,
+  "reason": "MECHANISM: that statement is the only advance of the cursor o in kids' `while o < t.end_` loop. Deleted, o stays at t.body, so `o < t.end_` stays true, `tlv(b, o, t.end_)` parses the same first child again and `out << c` appends a fresh Tlv each pass: an unbounded loop that grows `out` until memory is exhausted, so no test completes the call (the Timeout inside the walk test cannot fire while the allocator is retrying near the address-space cap). UNMUTATED: o = c.end_ is strictly greater than o for every child tlv accepts (a child has at least a 2-byte header), so the loop ends at t.end_ and the same tests finish in milliseconds. `racy`: where a test deadline or allocation failure reaches a test first the mutant is an ordinary kill, which the merge then requires to be plainly killed in that run."
+ },
+ {
+  "file": "lib/atlas_pca/safe_regex.rb",
+  "fn": "quantified",
+  "line": "@i += 1",
+  "occurrence": 2,
+  "mutant": "opasgn-+: += => -=",
+  "lineno": 239,
+  "evidence": "RUN_ERROR(timeout)",
+  "racy": true,
+  "reason": "MECHANISM: occurrence 2 is the cursor step past a '+' quantifier. With `-=`, after atom has consumed the repeated atom the cursor moves back one place onto that atom, so the sequence loop (`items << quantified while @i < @s.length ...`) parses the same atom and '+' again on every pass and appends a fresh :rep node each time: an unbounded loop that grows `items` until the time or memory cap, and no test can complete the compile. UNMUTATED: the step moves the cursor past '+', every pass of the sequence loop consumes at least one character, and the same tests finish in milliseconds under the same limits. `racy`: where a test deadline reaches a test first the mutant is an ordinary kill, which the merge then requires to be plainly killed in that run."
+ },
+ {
+  "file": "lib/atlas_pca/prohibitions.rb",
+  "fn": "advance_state_strict_inner",
+  "line": "x, y = kept.shift(2) # merge the oldest two; keeps the LATER time, so a cap is never under-counted",
+  "occurrence": 1,
+  "mutant": "call->recv-shift: kept.shift(2) => kept",
+  "lineno": 496,
+  "evidence": "RUN_ERROR(timeout)",
+  "racy": true,
+  "reason": "MECHANISM: `kept.shift(2)` is the only thing that shrinks `kept` in `while kept.length > MAX_LEDGER`. With the call replaced by its receiver, `x, y = kept` destructures the array without removing anything, and the following `kept.unshift(...)` grows it by one, so the length never falls below MAX_LEDGER and the loop never ends; no test can complete the call. UNMUTATED: each pass removes two entries and adds one, so an overflow of n entries finishes in n passes (the overflow tests use a handful over the cap and finish in milliseconds). `racy`: where a test deadline reaches a test first the mutant is an ordinary kill, which the merge then requires to be plainly killed in that run."
+ }
+]

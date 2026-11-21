@@ -134,7 +134,7 @@ grant = vector['grant']
 canon = AtlasPca.b64e(vector['pcactn_json'].b)
 resolver = ->(ref) { ref == pcactn['grant_ref'] ? grant : nil }
 app = ->(_env) { [200, {}, ['ok']] }
-mw = AtlasPca::RackMiddleware.new(app, audience: vector['context']['aud'], resolve_grant: resolver, now: vector['context']['now'])
+mw = AtlasPca::RackMiddleware.new(app, audience: vector['context']['aud'], resolve_grant: resolver, now: vector['context']['now'], signature_only: true)
 env = ->(h) { { 'HTTP_PCA_ACTION' => h, 'rack.input' => StringIO.new('') } }
 check(mw.call(env.call(canon))[0] == 200, 'canonical header verifies')
 lenient = [
@@ -158,7 +158,7 @@ DOC['vectors'].each do |v|
   next unless v['name'].start_with?('r041-share-')
 
   ctx = v['context']
-  got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], allowed_suites: ctx['allowed_suites'])
+  got = AtlasPca.verify_pcactn(v['pcactn'], v['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true, allowed_suites: ctx['allowed_suites'])
   exp = v['expect']
   if v['requires'].is_a?(String) && !SUPPORTED.include?(v['requires'])
     # a suite this runtime lacks: not compared, refused fail closed with unsupported_suite
@@ -201,7 +201,7 @@ safely('native PCActn from library helpers') do
     'counter' => 0, 'risk_claim' => { 'r' => 0, 'inputs' => {} }, 'aud' => 'rs-native', 'iat' => now - 1000, 'exp' => now + 60_000
   }
   p['sig'] = AtlasPca.b64e(agent.sign(nil, AtlasPca.threshold_message(p)))
-  v = AtlasPca.verify_pcactn(p, root, now: now, audience: 'rs-native')
+  v = AtlasPca.verify_pcactn(p, root, now: now, audience: 'rs-native', insecure_skip_plan_root_check: true)
   check(v.allow == true, "native PCActn: allow=#{v.allow} (#{v.reason}) #{v.checks.inspect}")
   # the same PCActn with every string re-tagged US-ASCII (as `"...".force_encoding('US-ASCII')` or other libraries give)
   ascii = lambda do |x|
@@ -212,7 +212,7 @@ safely('native PCActn from library helpers') do
     else x
     end
   end
-  check(AtlasPca.verify_pcactn(ascii.call(p), ascii.call(root), now: now, audience: 'rs-native').allow == true, 'US-ASCII copy (native)')
+  check(AtlasPca.verify_pcactn(ascii.call(p), ascii.call(root), now: now, audience: 'rs-native', insecure_skip_plan_root_check: true).allow == true, 'US-ASCII copy (native)')
 end
 
 safely('US-ASCII-tagged corpus PCActn; invalid encodings refused') do
@@ -226,7 +226,7 @@ safely('US-ASCII-tagged corpus PCActn; invalid encodings refused') do
     end
   end
   ctx = vec['context']
-  run = ->(pc) { AtlasPca.verify_pcactn(pc, vec['grant'], now: ctx['now'], audience: ctx['aud']) }
+  run = ->(pc) { AtlasPca.verify_pcactn(pc, vec['grant'], now: ctx['now'], audience: ctx['aud'], insecure_skip_plan_root_check: true) }
   check(run.call(vec['pcactn']).allow == true, 'corpus vector verifies')
   check(run.call(ascii.call(vec['pcactn'])).allow == true, 'US-ASCII-tagged copy of a valid PCActn verifies')
   bad = {

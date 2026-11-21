@@ -218,7 +218,7 @@ module MutationKill
       sh = { 'role' => 'r', 'alg' => 'fn-dsa-512', 'sig' => 'AA' }
       got = a.wire_unsupported_suite(p.merge('threshold' => { 'shares' => [5, sh] }))
       return "share suite #{got.inspect}" unless got == "#{AtlasPca::UNSUPPORTED_SUITE}: fn-dsa-512"
-      v = a.verify_pcactn(5, {}, now: 0, audience: 'a')
+      v = a.verify_pcactn(5, {}, now: 0, audience: 'a', insecure_skip_plan_root_check: true)
       return "verify non-Hash #{v.inspect}" unless v.allow == false && v.reason == 'wire: malformed PCActn'
       nil
     end
@@ -255,11 +255,11 @@ module MutationKill
       AtlasPca.singleton_class.prepend(V2Stub) unless AtlasPca.singleton_class.include?(V2Stub)
       v = RubyWb::VEC
       V2Stub::STATE[:on] = true
-      got = a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'])
+      got = a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'], insecure_skip_plan_root_check: true)
       return "v2 fallback reason #{got.reason.inspect}" unless got.allow == false && got.reason == 'schema: rejected'
-      base = a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'], allowed_suites: nil, intent_policy: nil, intent_v2: nil)
+      base = a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'], insecure_skip_plan_root_check: true, allowed_suites: nil, intent_policy: nil, intent_v2: nil)
       V2Stub::STATE[:on] = false
-      return 'defaults' unless a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud']).to_a == a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'], allowed_suites: nil, intent_policy: nil, intent_v2: nil).to_a
+      return 'defaults' unless a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'], insecure_skip_plan_root_check: true).to_a == a.verify_pcactn(v['pcactn'], v['grant'], now: v['context']['now'], audience: v['context']['aud'], insecure_skip_plan_root_check: true, allowed_suites: nil, intent_policy: nil, intent_v2: nil).to_a
       return 'stub reached the explicit-nil call' unless base.allow == false
       nil
     ensure

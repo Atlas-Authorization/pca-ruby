@@ -3,17 +3,23 @@ name: Mutation
 # Mutation testing of the verifier library, every file of lib/ (atlas_pca.rb and the lib/atlas_pca/* extensions it
 # require_relative's), with the AST mutator in the flagship (tools/pca-audit/ruby-mutate; oracle = the kill tests +
 # core/adversarial corpus + every conformance table + the reason snapshot; a mutant of an extension file is evaluated with
-# the library and every other extension re-loaded). 98 shards: the large files are split by mutant id (slice k of m = ids
+# the library and every other extension re-loaded). 605 shards (about 3x the former slice size, ~450-700 mutants each: ~2-3.5 h at the measured ~18 s per mutant, inside the 300-minute cap; every mutant id is still in exactly one slice): the large files are split by mutant id (slice k of m = ids
 # with id % m == k - 1), the three small files share one shard; the plan check fails when lib/ gains a file the matrix does
 # not list. The merge job checks the survivors against the equivalent-mutant ledger: it passes when every survivor is a
 # ledgered equivalent and no ledger entry is stale. Runs on demand and on ci/** branches (the release-candidate check),
 # never on main pushes. ubuntu-26.04 + setup-ruby: the openssl extension gets ML-DSA from OpenSSL 3.5 (the CI's green
 # configuration); libatlas_less is built for the LESS suites.
+# OPT-IN MODULES (rows with `module:`): the pairing packages (aggsig, bbs, abe, fame, bls12), FHE on SEAL, the endemic
+# LWE base OT, FN-DSA, the zk Groth16 binding, the QRNG request URLs (entropy, through libada) and the wasm sandbox hosts need a native library, so they are mutated on their own shards that build it as
+# the module's replay workflow does (pairing.yml, fhe.yml, lwe-ot.yml, fndsa.yml, zk.yml, sandbox-wasm.yml). Their oracle is the module's
+# own replay tests (module-kill.rb turns them into kill entries, run first) plus the core oracle; a run where a module test
+# file only skips fails, so a missing library is never read as a surviving mutant.
 # Shard 25/62 of run 39706440492 (intent_v2.rb slice 21/36) ran to the 300-minute limit with no result: the reaper blocked on a
 # mutant child that its own timer thread could not kill (a C call that never yields the interpreter lock), and the stderr
 # filter (grep without --line-buffered) hid all progress. mutate.rb now kills a child from the PARENT (process group, --timeout
 # + 20s), the filter is line-buffered, and intent_v2.rb is cut into 72 slices (~146 mutants each; a full slice measured ~45 min
-# on a loaded box). Carry-forward is keyed by mutant identity, not id or slice, so the next targeted run maps any baseline.
+# on a loaded box). agent.rb (one shard of 1133 mutants) ran to the 300-minute limit in run 41710479412 (shards 115 + 120-122
+# now, slices of 4). Carry-forward is keyed by mutant identity, not id or slice, so the next targeted run maps any baseline.
 # The reason snapshot is written on the runner from the UNMUTATED source before mutating (it is a characterization oracle:
 # "same output as the original, on this host's backends"); a committed copy that differs only gets a warning. A stale
 # committed snapshot (and a hard-coded suite list) made every shard's baseline fail in run 38330627498.
@@ -37,7 +43,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: ['ci/**']
+    branches: ['ci/**', '!ci/build-**']
 
 permissions:
   contents: read
@@ -50,15 +56,223 @@ concurrency:
 
 env:
   CRATE: ruby-pca
-  SHARDS: '98'
-  # every file of lib/, as listed in the matrix below (checked by the shard step)
+  BLST_TAG: v0.3.16
+  BLST_COMMIT: e7f90de551e8df682f3cc99067d204d8b90d27ad
+  SEAL_TAG: v4.1.2
+  SHARDS: '605'
+  # every file of lib/, as listed in the matrix below (checked by the shard step). The attestation verifiers (lib/atlas_pca/attest*,
+  # opt-in: not required by atlas_pca.rb) are mutated too: the attest kill tests require them, so the oracle re-evaluates them
+  # per mutant (oracle.rb @opt_in). They were left out of the plan until run 41710479412 (4.7k lines never mutated).
   PLAN_FILES: >-
-    lib/atlas_pca.rb lib/atlas_pca/intent_v2.rb lib/atlas_pca/intent_wb.rb lib/atlas_pca/predicates.rb
-    lib/atlas_pca/safe_regex.rb lib/atlas_pca/rack_middleware.rb lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb
+    lib/atlas_pca.rb lib/atlas_pca/intent_v2.rb lib/atlas_pca/intent_wb.rb lib/atlas_pca/predicates.rb lib/atlas_pca/safe_regex.rb lib/atlas_pca/rack_middleware.rb
+    lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb lib/atlas_pca/authorize.rb lib/atlas_pca/operations.rb lib/atlas_pca/atomic_kv.rb lib/atlas_pca/plan_lifecycle.rb
+    lib/atlas_pca/revocation_staleness.rb lib/atlas_pca/assurance.rb lib/atlas_pca/stepup.rb lib/atlas_pca/store_conformance.rb lib/atlas_pca/decision.rb lib/atlas_pca/mesh.rb
+    lib/atlas_pca/escalation.rb lib/atlas_pca/passport.rb lib/atlas_pca/optimistic.rb lib/atlas_pca/ledger.rb lib/atlas_pca/intent_history.rb lib/atlas_pca/agent.rb
+    lib/atlas_pca/actions.rb lib/atlas_pca/actions_registry.rb lib/atlas_pca/caveat_lang.rb lib/atlas_pca/forbid_certificate.rb lib/atlas_pca/policy_link.rb lib/atlas_pca/fresh_at.rb
+    lib/atlas_pca/k3.rb lib/atlas_pca/pca_grant.rb lib/atlas_pca/blueprint.rb lib/atlas_pca/a2a.rb lib/atlas_pca/workflow.rb lib/atlas_pca/readside.rb
+    lib/atlas_pca/read_vault.rb lib/atlas_pca/lease.rb lib/atlas_pca/obligations.rb lib/atlas_pca/break_glass.rb lib/atlas_pca/missing_context.rb lib/atlas_pca/policy_classes.rb
+    lib/atlas_pca/k4.rb lib/atlas_pca/approval.rb lib/atlas_pca/protect.rb lib/atlas_pca/provenance_gate.rb lib/atlas_pca/refusal_help.rb lib/atlas_pca/runtime_claim.rb
+    lib/atlas_pca/sigstore_bundle.rb lib/atlas_pca/risk.rb lib/atlas_pca/taint.rb lib/atlas_pca/beacons.rb lib/atlas_pca/prohibitions.rb lib/atlas_pca/contracts.rb
+    lib/atlas_pca/signers_more.rb lib/atlas_pca/facade.rb lib/atlas_pca/catalog_builtin.rb lib/atlas_pca/arg_provenance.rb lib/atlas_pca/undo.rb lib/atlas_pca/aggsig.rb
+    lib/atlas_pca/abe.rb lib/atlas_pca/abe_policy.rb lib/atlas_pca/bbs.rb lib/atlas_pca/bbs_credential.rb lib/atlas_pca/fame.rb lib/atlas_pca/bls12.rb
+    lib/atlas_pca/fhe_seal.rb lib/atlas_pca/mpc_lwe_ot.rb lib/atlas_pca/fndsa.rb lib/atlas_pca/fndsa_native.rb lib/atlas_pca/sandbox_wasm.rb lib/atlas_pca/attest.rb
+    lib/atlas_pca/attest/common.rb lib/atlas_pca/attest/der.rb lib/atlas_pca/attest/cert.rb lib/atlas_pca/attest/amd.rb lib/atlas_pca/attest/azure.rb lib/atlas_pca/attest/gcp.rb
+    lib/atlas_pca/attest/intel.rb lib/atlas_pca/attest/ocsp.rb lib/atlas_pca/attest/xml.rb lib/atlas_pca/attest/nvidia.rb lib/atlas_pca/a2a_binding.rb lib/atlas_pca/a2a_card.rb
+    lib/atlas_pca/acp.rb lib/atlas_pca/actions_approval_profiles.rb lib/atlas_pca/actions_author.rb lib/atlas_pca/actions_build.rb lib/atlas_pca/actions_builtin.rb lib/atlas_pca/actions_builtin_data.rb
+    lib/atlas_pca/actions_compat.rb lib/atlas_pca/actions_confirmation.rb lib/atlas_pca/actions_derive.rb lib/atlas_pca/actions_diff.rb lib/atlas_pca/actions_effective.rb lib/atlas_pca/actions_evolve.rb
+    lib/atlas_pca/actions_hosted.rb lib/atlas_pca/actions_idpattern.rb lib/atlas_pca/actions_import_asyncapi.rb lib/atlas_pca/actions_import_common.rb lib/atlas_pca/actions_import_eval.rb lib/atlas_pca/actions_import_graphql.rb
+    lib/atlas_pca/actions_import_grpc.rb lib/atlas_pca/actions_import_jsonschema.rb lib/atlas_pca/actions_import_jsre.rb lib/atlas_pca/actions_import_mcp.rb lib/atlas_pca/actions_import_model.rb lib/atlas_pca/actions_import_openapi.rb
+    lib/atlas_pca/actions_import_pipeline.rb lib/atlas_pca/actions_import_rules_data.rb lib/atlas_pca/actions_import_suggest.rb lib/atlas_pca/actions_lint.rb lib/atlas_pca/actions_render.rb lib/atlas_pca/actions_review.rb
+    lib/atlas_pca/actions_rules.rb lib/atlas_pca/actions_selector.rb lib/atlas_pca/actions_sync.rb lib/atlas_pca/actions_templates.rb lib/atlas_pca/actions_templates_data.rb lib/atlas_pca/actions_test_runner.rb
+    lib/atlas_pca/actions_transparency.rb lib/atlas_pca/actions_undo.rb lib/atlas_pca/actions_yaml_emit.rb lib/atlas_pca/actions_yaml_load.rb lib/atlas_pca/ada_idna.rb lib/atlas_pca/adapters.rb
+    lib/atlas_pca/agentcard.rb lib/atlas_pca/agentcard_card.rb lib/atlas_pca/analyzer.rb lib/atlas_pca/analyzer_core.rb lib/atlas_pca/analyzer_coverage.rb lib/atlas_pca/analyzer_exposure.rb
+    lib/atlas_pca/analyzer_js.rb lib/atlas_pca/analyzer_narrowing.rb lib/atlas_pca/analyzer_residual.rb lib/atlas_pca/analyzer_validate.rb lib/atlas_pca/anthropic.rb lib/atlas_pca/ap2.rb
+    lib/atlas_pca/ap2_chain.rb lib/atlas_pca/ap2_mandates.rb lib/atlas_pca/ap2_pca.rb lib/atlas_pca/attest_eat.rb lib/atlas_pca/attest_eat_admission.rb lib/atlas_pca/attest_eat_common.rb
+    lib/atlas_pca/attest_eat_pqcosign.rb lib/atlas_pca/authzen.rb lib/atlas_pca/ciba.rb lib/atlas_pca/ciba_conformance.rb lib/atlas_pca/compliance.rb lib/atlas_pca/connect.rb
+    lib/atlas_pca/connect_replay.rb lib/atlas_pca/connectors.rb lib/atlas_pca/connectors_providers.rb lib/atlas_pca/control_evals.rb lib/atlas_pca/control_evals_example.rb lib/atlas_pca/dataflow.rb
+    lib/atlas_pca/dlp.rb lib/atlas_pca/doctor.rb lib/atlas_pca/dpop.rb lib/atlas_pca/erc7715.rb lib/atlas_pca/events.rb lib/atlas_pca/evidence.rb
+    lib/atlas_pca/evidence_cli.rb lib/atlas_pca/evidence_verify.rb lib/atlas_pca/explain.rb lib/atlas_pca/explain_js.rb lib/atlas_pca/fetch.rb lib/atlas_pca/fhe.rb
+    lib/atlas_pca/frost.rb lib/atlas_pca/gateway.rb lib/atlas_pca/gnap.rb lib/atlas_pca/goal_binding.rb lib/atlas_pca/goal_card.rb lib/atlas_pca/goal_codec.rb
+    lib/atlas_pca/goal_compiler.rb lib/atlas_pca/goal_crc.rb lib/atlas_pca/goal_digests.rb lib/atlas_pca/goal_disambiguate.rb lib/atlas_pca/goal_drift.rb lib/atlas_pca/goal_error.rb
+    lib/atlas_pca/goal_examples.rb lib/atlas_pca/goal_fmt.rb lib/atlas_pca/goal_interpret.rb lib/atlas_pca/goal_js.rb lib/atlas_pca/goal_kernel.rb lib/atlas_pca/goal_legacy.rb
+    lib/atlas_pca/goal_normalize.rb lib/atlas_pca/goal_nversion.rb lib/atlas_pca/goal_ontologies.rb lib/atlas_pca/goal_ontologies_data.rb lib/atlas_pca/goal_ontology.rb lib/atlas_pca/goal_precedent.rb
+    lib/atlas_pca/goal_refsem.rb lib/atlas_pca/goal_review.rb lib/atlas_pca/goal_roundtrip.rb lib/atlas_pca/goal_selectors.rb lib/atlas_pca/goal_sign.rb lib/atlas_pca/grants.rb
+    lib/atlas_pca/grants_list.rb lib/atlas_pca/grants_service.rb lib/atlas_pca/grants_shadow.rb lib/atlas_pca/harness.rb lib/atlas_pca/idjag.rb lib/atlas_pca/immune.rb
+    lib/atlas_pca/intent_classifier.rb lib/atlas_pca/intent_clopper.rb lib/atlas_pca/intent_compilers.rb lib/atlas_pca/intent_effects.rb lib/atlas_pca/intent_frames.rb lib/atlas_pca/intent_jit.rb
+    lib/atlas_pca/intent_layers_wallet.rb lib/atlas_pca/intent_learner.rb lib/atlas_pca/intent_map.rb lib/atlas_pca/intent_map_commit.rb lib/atlas_pca/intent_mapkit.rb lib/atlas_pca/intent_metrics.rb
+    lib/atlas_pca/intent_multi.rb lib/atlas_pca/intent_multi_agg.rb lib/atlas_pca/intent_omega.rb lib/atlas_pca/intent_policy.rb lib/atlas_pca/intent_profile.rb lib/atlas_pca/intent_provenance.rb
+    lib/atlas_pca/intent_ramp.rb lib/atlas_pca/intent_refine.rb lib/atlas_pca/intent_region.rb lib/atlas_pca/intent_render.rb lib/atlas_pca/intent_required.rb lib/atlas_pca/intent_runtime.rb
+    lib/atlas_pca/intent_schema.rb lib/atlas_pca/intent_slots.rb lib/atlas_pca/intent_statement.rb lib/atlas_pca/intent_trajectory.rb lib/atlas_pca/intent_ux.rb lib/atlas_pca/intent_witnesses.rb
+    lib/atlas_pca/intent_world.rb lib/atlas_pca/invariants.rb lib/atlas_pca/jose.rb lib/atlas_pca/js_compat.rb lib/atlas_pca/langchain.rb lib/atlas_pca/llamaindex.rb
+    lib/atlas_pca/mcp.rb lib/atlas_pca/mpc.rb lib/atlas_pca/mpc_ec.rb lib/atlas_pca/mpc_kem_ot.rb lib/atlas_pca/mpc_libcrypto.rb lib/atlas_pca/mpc_mascot.rb
+    lib/atlas_pca/mpc_net.rb lib/atlas_pca/mpc_net/certs.rb lib/atlas_pca/mpc_net/clock.rb lib/atlas_pca/mpc_net/faults.rb lib/atlas_pca/mpc_net/forensics.rb lib/atlas_pca/mpc_net/gadget.rb
+    lib/atlas_pca/mpc_net/launch_local.rb lib/atlas_pca/mpc_net/mesh.rb lib/atlas_pca/mpc_net/offline.rb lib/atlas_pca/mpc_net/ot_net.rb lib/atlas_pca/mpc_net/party_main.rb lib/atlas_pca/mpc_net/protocol.rb
+    lib/atlas_pca/mpc_ot.rb lib/atlas_pca/mpc_otx.rb lib/atlas_pca/mpc_spdz.rb lib/atlas_pca/notary.rb lib/atlas_pca/oauth.rb lib/atlas_pca/oidc.rb
+    lib/atlas_pca/openai.rb lib/atlas_pca/openai_agents.rb lib/atlas_pca/oprf.rb lib/atlas_pca/otel.rb lib/atlas_pca/payments.rb lib/atlas_pca/payments_rails.rb
+    lib/atlas_pca/payments_token.rb lib/atlas_pca/policy_bridge.rb lib/atlas_pca/policy_bridge_cel.rb lib/atlas_pca/policy_ci.rb lib/atlas_pca/pq_threshold.rb lib/atlas_pca/rag.rb
+    lib/atlas_pca/rails.rb lib/atlas_pca/ratchet.rb lib/atlas_pca/ratchet_accumulator.rb lib/atlas_pca/ratchet_group.rb lib/atlas_pca/revoke.rb lib/atlas_pca/rotate.rb
+    lib/atlas_pca/ruby_llm.rb lib/atlas_pca/sandbox.rb lib/atlas_pca/sandbox_egress.rb lib/atlas_pca/schema.rb lib/atlas_pca/scim.rb lib/atlas_pca/scitt.rb
+    lib/atlas_pca/scitt_log.rb lib/atlas_pca/sdjwt.rb lib/atlas_pca/siem.rb lib/atlas_pca/signals.rb lib/atlas_pca/spiffe.rb lib/atlas_pca/store_conformance_cli.rb
+    lib/atlas_pca/store_conformance_crash.rb lib/atlas_pca/store_conformance_load.rb lib/atlas_pca/store_conformance_model.rb lib/atlas_pca/store_conformance_pca_state.rb lib/atlas_pca/store_conformance_profiles.rb lib/atlas_pca/store_conformance_runner.rb
+    lib/atlas_pca/store_conformance_worker.rb lib/atlas_pca/testing.rb lib/atlas_pca/txn_tokens.rb lib/atlas_pca/vc.rb lib/atlas_pca/vdf.rb lib/atlas_pca/wallet.rb
+    lib/atlas_pca/wallet_card.rb lib/atlas_pca/wallet_channel.rb lib/atlas_pca/wallet_delivery.rb lib/atlas_pca/wallet_handlers.rb lib/atlas_pca/wallet_population.rb lib/atlas_pca/wallet_pricing.rb
+    lib/atlas_pca/webauthn.rb lib/atlas_pca/webbotauth.rb lib/atlas_pca/whatwg_url.rb lib/atlas_pca/goal_bench.rb lib/atlas_pca/approval_channels.rb lib/atlas_pca/hash_suite.rb
+    lib/atlas_pca/pq.rb lib/atlas_pca/server_guard.rb lib/atlas_pca/chain_compact.rb lib/atlas_pca/policy_templates.rb lib/atlas_pca/discovery.rb lib/atlas_pca/reference_names.rb
+    lib/atlas_pca/durable_state.rb lib/atlas_pca/undo_stores.rb lib/atlas_pca/wire_checks.rb lib/atlas_pca/approvals.rb lib/atlas_pca/reference_helpers.rb lib/atlas_pca/actions_pack.rb
+    lib/atlas_pca/mesh_witness.rb lib/atlas_pca/policy_vm.rb lib/atlas_pca/pq_threshold_experimental.rb lib/atlas_pca/undo_coordinator.rb lib/atlas_pca/bond_settlement.rb lib/atlas_pca/bond_store.rb
+    lib/atlas_pca/budget_ledger.rb lib/atlas_pca/ledger_store.rb lib/atlas_pca/optimistic_adjudication.rb lib/atlas_pca/store_errors.rb lib/atlas_pca/agent_native.rb lib/atlas_pca/bond_pool.rb
+    lib/atlas_pca/core_small.rb lib/atlas_pca/durable_open.rb lib/atlas_pca/entropy.rb lib/atlas_pca/kem.rb lib/atlas_pca/ledger_sign.rb lib/atlas_pca/objective_binding.rb
+    lib/atlas_pca/optimistic_open.rb lib/atlas_pca/signers_siblings.rb lib/atlas_pca/zk_native.rb lib/atlas_pca/zk_ceremony.rb lib/atlas_pca/fdlibm_pow.rb lib/atlas_pca/mesh_issue.rb
+    lib/atlas_pca/zk.rb lib/atlas_pca/zk_bundled.rb lib/atlas_pca/pq_quorum.rb lib/atlas_pca/safety_certificate.rb lib/atlas_pca/catalog.rb lib/atlas_pca/budget_forecast.rb
+    lib/atlas_pca/policy_sim.rb lib/atlas_pca/reputation.rb lib/atlas_pca/console.rb lib/atlas_pca/session.rb lib/atlas_pca/policy_debug.rb lib/atlas_pca/ha.rb
+    lib/atlas_pca/frontier_signals.rb lib/atlas_pca/objective_risk.rb lib/atlas_pca/progress.rb lib/atlas_pca/attestation.rb lib/atlas_pca/attest_pq_software.rb lib/atlas_pca/attest_puf.rb
+    lib/atlas_pca/attest_allowlist.rb lib/atlas_pca/attest_maa.rb lib/atlas_pca/attest_maa_pins_data.rb lib/atlas_pca/attest_nvidia.rb lib/atlas_pca/attest_vendors.rb lib/atlas_pca/semantic_threshold.rb
+    lib/atlas_pca/passport_api.rb lib/atlas_pca/beacons_api.rb lib/atlas_pca/action_schema_api.rb lib/atlas_pca/intent_artifacts.rb lib/atlas_pca/intent_constants.rb lib/atlas_pca/nl_approval.rb
+    lib/atlas_pca/frost_net.rb lib/atlas_pca/frost_nonce_store.rb lib/atlas_pca/frost_pq_api.rb lib/atlas_pca/frost_dkg.rb lib/atlas_pca/frost_dkg_channel.rb lib/atlas_pca/collation.rb
+    lib/atlas_pca/verify_verdict.rb lib/atlas_pca/frost_dkg_tls.rb lib/atlas_pca/frost_net_http.rb lib/atlas_pca/intent_signed.rb
 
 jobs:
+  reuse:
+    name: reuse check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      skip: ${{ steps.reuse.outputs.skip }}
+      hash: ${{ steps.reuse.outputs.hash }}
+      source: ${{ steps.reuse.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+      # input-hash reuse (ci-reuse.mjs): when an earlier run recorded the same input hash, every other job of this run is skipped.
+      # continue-on-error: a failing check can only mean "no reuse"; FORCE_FULL / force_full / [force-full] bypass it.
+      - id: reuse
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_FULL: ${{ inputs.force_full || inputs.full || vars.FORCE_FULL == '1' || contains(github.event.head_commit.message, '[force-full]') }}
+          GATE_FULL: ${{ inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]') }}
+          PARTIAL: ${{ false }}
+          EXTRA: ''
+        run: node .github/scripts/ci-reuse.mjs check --workflow=mutation --self=.github/workflows/mutation.yml --external=flagship --extra="$EXTRA"
+  # ONE job downloads the baseline run's results (with retries) and hands them to every shard as a single artifact: ~260 artifacts
+  # downloaded by each of 64 concurrent shards were rate-limited (34 of 256 shards of run 42714273279 still had none after 6
+  # attempts and silently ran a full slice). A baseline_run that cannot be fetched fails the run (loud) instead of degrading.
+  pool:
+    needs: reuse
+    name: baseline pool
+    if: ${{ needs.reuse.outputs.skip != 'true' && (!(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      have: ${{ steps.pool.outputs.have }}
+    steps:
+      - id: pool
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE: ${{ inputs.baseline_run }}
+        run: |
+          ids="$BASELINE"
+          if [ -z "$ids" ]; then
+            ids="$(gh run list -R "$GITHUB_REPOSITORY" --workflow mutation.yml --branch "$GITHUB_REF_NAME" --limit 20 \
+                     --json databaseId -q '.[].databaseId' | grep -vx "$GITHUB_RUN_ID" || true)"
+          fi
+          for id in $ids; do
+            for attempt in 1 2 3 4 5 6; do
+              rm -rf base
+              if gh run download "$id" -R "$GITHUB_REPOSITORY" -p 'mut-results-*' -D base 2>dl.err \
+                 && [ -n "$(find base -name '*.src.rb' -print -quit)" ]; then
+                echo "have=true" >> "$GITHUB_OUTPUT"
+                echo "baseline pool from run $id: $(find base -name '*.json' | wc -l) results file(s), attempt $attempt"; exit 0
+              fi
+              echo "::warning::baseline download from run $id, attempt $attempt/6 failed: $(tail -c 300 dl.err | tr '\n' ' ')"
+              sleep $((attempt * 20))
+            done
+            [ -n "$BASELINE" ] && { echo "::error::baseline run $BASELINE could not be fetched"; exit 1; }
+          done
+          echo "have=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::no baseline results found, full run (seeds the next run)"
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.pool.outputs.have == 'true' }}
+        with:
+          name: baseline-pool
+          path: base/
+          retention-days: 2
+          compression-level: 6
+
+  # the native libraries of the opt-in modules, built once each (not in every shard of the module): same container image as the
+  # shards, uploaded as native-<module>
+  natives:
+    if: ${{ needs.reuse.outputs.skip != 'true' }}
+    needs: reuse
+    name: native libraries (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+      env:
+        LANG: C.UTF-8
+        LC_ALL: C.UTF-8
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [pairing, fhe, lwe-ot, fndsa, zk, ada, sandbox-wasm]
+    steps:
+      - name: Container toolchain
+        run: |
+          for attempt in 1 2 3; do apt-get update -qq -o Acquire::Retries=5 && break; [ "$attempt" = 3 ] && exit 100; sleep $((attempt * 30)); done
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends git gcc make libc6-dev ca-certificates curl xz-utils zstd gzip cmake g++ pkg-config libclang-dev libffi-dev zlib1g-dev >/dev/null
+          git config --global --add safe.directory '*'
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship tooling
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+      - name: Build
+        run: |
+          out="$RUNNER_TEMP/native-out"; mkdir -p "$out"
+          case "${{ matrix.module }}" in
+            pairing)
+              git clone --quiet --depth 1 --branch "$BLST_TAG" https://github.com/supranational/blst "$RUNNER_TEMP/blst"
+              test "$(git -C "$RUNNER_TEMP/blst" rev-parse HEAD)" = "$BLST_COMMIT"
+              cc -O2 -fPIC -shared -D__BLST_PORTABLE__ -I"$RUNNER_TEMP/blst/bindings" -o "$out/libblst.so" \
+                native/pca_gt.c "$RUNNER_TEMP/blst/src/server.c" "$RUNNER_TEMP/blst/build/assembly.S" ;;
+            fhe)
+              .github/scripts/fhe-seal-corpus.sh "$out/fhe-seal.json.gz" "$MONO/tools/pca-audit/oracles/fhe-seal.mts"
+              cp "$(.github/scripts/build-libsealc.sh "$SEAL_TAG" "$RUNNER_TEMP/seal")/libsealc.so" "$out/" ;;
+            lwe-ot)
+              cp "$(.github/scripts/build-liblweot.sh "$RUNNER_TEMP/lweot" "$MONO/packages/pca-mpc-lwe-ot-wasm/crate" | tail -1)/liblweot.so" "$out/" ;;
+            fndsa)
+              cp "$(.github/scripts/build-libfndsa.sh "$RUNNER_TEMP/fndsa" "$MONO/packages/pca-fndsa-wasm/crate" | tail -1)/libfndsa.so" "$out/" ;;
+            zk)
+              cp "$(.github/scripts/build-libpcazk.sh "$RUNNER_TEMP/pcazk" "$MONO/packages/pca-zk/crate" | tail -1)/libpcazk.so" "$out/" ;;
+            ada)
+              mkdir -p "$RUNNER_TEMP/ada"
+              for f in ada.cpp ada.h ada_c.h; do curl -fsSL --retry 4 -o "$RUNNER_TEMP/ada/$f" "https://github.com/ada-url/ada/releases/download/v4.0.0/$f"; done
+              g++ -O2 -std=c++20 -shared -fPIC "$RUNNER_TEMP/ada/ada.cpp" -o "$out/libada.so" ;;
+            sandbox-wasm)
+              .github/scripts/build-wasmtime-host.sh "$out" "$MONO/packages/pca-sandbox/wasmtime-host" >/dev/null
+              sha256sum "$out/pca-wasmtime-host" | cut -d' ' -f1 > "$out/host.sha256" ;;
+          esac
+          ls -l "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.module }}
+          path: ${{ runner.temp }}/native-out/
+          retention-days: 2
+          if-no-files-found: error
+
   shard:
-    name: shard ${{ matrix.shard }}/98 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
+    needs: [reuse, pool, natives]
+    if: ${{ needs.reuse.outputs.skip != 'true' && (!cancelled() && needs.pool.result != 'failure') }}
+    name: shard ${{ matrix.shard }}/605 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
     # the ubuntu-26.04 userland (OpenSSL 3.5: ML-DSA / SLH-DSA) in a container on the general runner pool: the
     # ubuntu-26.04 hosted image has a much smaller concurrency pool (~14 jobs where the plan allows 60)
     runs-on: ubuntu-latest
@@ -73,111 +287,265 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
+      max-parallel: 256 # Enterprise plan: 500 concurrent jobs org-wide; GitHub queues anything above that
       matrix:
         include:
-          - { shard: 1, files: lib/atlas_pca.rb, slice: 1, of: 4 }
-          - { shard: 2, files: lib/atlas_pca.rb, slice: 2, of: 4 }
-          - { shard: 3, files: lib/atlas_pca.rb, slice: 3, of: 4 }
-          - { shard: 4, files: lib/atlas_pca.rb, slice: 4, of: 4 }
-          - { shard: 5, files: lib/atlas_pca/intent_v2.rb, slice: 1, of: 72 }
-          - { shard: 6, files: lib/atlas_pca/intent_v2.rb, slice: 2, of: 72 }
-          - { shard: 7, files: lib/atlas_pca/intent_v2.rb, slice: 3, of: 72 }
-          - { shard: 8, files: lib/atlas_pca/intent_v2.rb, slice: 4, of: 72 }
-          - { shard: 9, files: lib/atlas_pca/intent_v2.rb, slice: 5, of: 72 }
-          - { shard: 10, files: lib/atlas_pca/intent_v2.rb, slice: 6, of: 72 }
-          - { shard: 11, files: lib/atlas_pca/intent_v2.rb, slice: 7, of: 72 }
-          - { shard: 12, files: lib/atlas_pca/intent_v2.rb, slice: 8, of: 72 }
-          - { shard: 13, files: lib/atlas_pca/intent_v2.rb, slice: 9, of: 72 }
-          - { shard: 14, files: lib/atlas_pca/intent_v2.rb, slice: 10, of: 72 }
-          - { shard: 15, files: lib/atlas_pca/intent_v2.rb, slice: 11, of: 72 }
-          - { shard: 16, files: lib/atlas_pca/intent_v2.rb, slice: 12, of: 72 }
-          - { shard: 17, files: lib/atlas_pca/intent_v2.rb, slice: 13, of: 72 }
-          - { shard: 18, files: lib/atlas_pca/intent_v2.rb, slice: 14, of: 72 }
-          - { shard: 19, files: lib/atlas_pca/intent_v2.rb, slice: 15, of: 72 }
-          - { shard: 20, files: lib/atlas_pca/intent_v2.rb, slice: 16, of: 72 }
-          - { shard: 21, files: lib/atlas_pca/intent_v2.rb, slice: 17, of: 72 }
-          - { shard: 22, files: lib/atlas_pca/intent_v2.rb, slice: 18, of: 72 }
-          - { shard: 23, files: lib/atlas_pca/intent_v2.rb, slice: 19, of: 72 }
-          - { shard: 24, files: lib/atlas_pca/intent_v2.rb, slice: 20, of: 72 }
-          - { shard: 25, files: lib/atlas_pca/intent_v2.rb, slice: 21, of: 72 }
-          - { shard: 26, files: lib/atlas_pca/intent_v2.rb, slice: 22, of: 72 }
-          - { shard: 27, files: lib/atlas_pca/intent_v2.rb, slice: 23, of: 72 }
-          - { shard: 28, files: lib/atlas_pca/intent_v2.rb, slice: 24, of: 72 }
-          - { shard: 29, files: lib/atlas_pca/intent_v2.rb, slice: 25, of: 72 }
-          - { shard: 30, files: lib/atlas_pca/intent_v2.rb, slice: 26, of: 72 }
-          - { shard: 31, files: lib/atlas_pca/intent_v2.rb, slice: 27, of: 72 }
-          - { shard: 32, files: lib/atlas_pca/intent_v2.rb, slice: 28, of: 72 }
-          - { shard: 33, files: lib/atlas_pca/intent_v2.rb, slice: 29, of: 72 }
-          - { shard: 34, files: lib/atlas_pca/intent_v2.rb, slice: 30, of: 72 }
-          - { shard: 35, files: lib/atlas_pca/intent_v2.rb, slice: 31, of: 72 }
-          - { shard: 36, files: lib/atlas_pca/intent_v2.rb, slice: 32, of: 72 }
-          - { shard: 37, files: lib/atlas_pca/intent_v2.rb, slice: 33, of: 72 }
-          - { shard: 38, files: lib/atlas_pca/intent_v2.rb, slice: 34, of: 72 }
-          - { shard: 39, files: lib/atlas_pca/intent_v2.rb, slice: 35, of: 72 }
-          - { shard: 40, files: lib/atlas_pca/intent_v2.rb, slice: 36, of: 72 }
-          - { shard: 41, files: lib/atlas_pca/intent_v2.rb, slice: 37, of: 72 }
-          - { shard: 42, files: lib/atlas_pca/intent_v2.rb, slice: 38, of: 72 }
-          - { shard: 43, files: lib/atlas_pca/intent_v2.rb, slice: 39, of: 72 }
-          - { shard: 44, files: lib/atlas_pca/intent_v2.rb, slice: 40, of: 72 }
-          - { shard: 45, files: lib/atlas_pca/intent_v2.rb, slice: 41, of: 72 }
-          - { shard: 46, files: lib/atlas_pca/intent_v2.rb, slice: 42, of: 72 }
-          - { shard: 47, files: lib/atlas_pca/intent_v2.rb, slice: 43, of: 72 }
-          - { shard: 48, files: lib/atlas_pca/intent_v2.rb, slice: 44, of: 72 }
-          - { shard: 49, files: lib/atlas_pca/intent_v2.rb, slice: 45, of: 72 }
-          - { shard: 50, files: lib/atlas_pca/intent_v2.rb, slice: 46, of: 72 }
-          - { shard: 51, files: lib/atlas_pca/intent_v2.rb, slice: 47, of: 72 }
-          - { shard: 52, files: lib/atlas_pca/intent_v2.rb, slice: 48, of: 72 }
-          - { shard: 53, files: lib/atlas_pca/intent_v2.rb, slice: 49, of: 72 }
-          - { shard: 54, files: lib/atlas_pca/intent_v2.rb, slice: 50, of: 72 }
-          - { shard: 55, files: lib/atlas_pca/intent_v2.rb, slice: 51, of: 72 }
-          - { shard: 56, files: lib/atlas_pca/intent_v2.rb, slice: 52, of: 72 }
-          - { shard: 57, files: lib/atlas_pca/intent_v2.rb, slice: 53, of: 72 }
-          - { shard: 58, files: lib/atlas_pca/intent_v2.rb, slice: 54, of: 72 }
-          - { shard: 59, files: lib/atlas_pca/intent_v2.rb, slice: 55, of: 72 }
-          - { shard: 60, files: lib/atlas_pca/intent_v2.rb, slice: 56, of: 72 }
-          - { shard: 61, files: lib/atlas_pca/intent_v2.rb, slice: 57, of: 72 }
-          - { shard: 62, files: lib/atlas_pca/intent_v2.rb, slice: 58, of: 72 }
-          - { shard: 63, files: lib/atlas_pca/intent_v2.rb, slice: 59, of: 72 }
-          - { shard: 64, files: lib/atlas_pca/intent_v2.rb, slice: 60, of: 72 }
-          - { shard: 65, files: lib/atlas_pca/intent_v2.rb, slice: 61, of: 72 }
-          - { shard: 66, files: lib/atlas_pca/intent_v2.rb, slice: 62, of: 72 }
-          - { shard: 67, files: lib/atlas_pca/intent_v2.rb, slice: 63, of: 72 }
-          - { shard: 68, files: lib/atlas_pca/intent_v2.rb, slice: 64, of: 72 }
-          - { shard: 69, files: lib/atlas_pca/intent_v2.rb, slice: 65, of: 72 }
-          - { shard: 70, files: lib/atlas_pca/intent_v2.rb, slice: 66, of: 72 }
-          - { shard: 71, files: lib/atlas_pca/intent_v2.rb, slice: 67, of: 72 }
-          - { shard: 72, files: lib/atlas_pca/intent_v2.rb, slice: 68, of: 72 }
-          - { shard: 73, files: lib/atlas_pca/intent_v2.rb, slice: 69, of: 72 }
-          - { shard: 74, files: lib/atlas_pca/intent_v2.rb, slice: 70, of: 72 }
-          - { shard: 75, files: lib/atlas_pca/intent_v2.rb, slice: 71, of: 72 }
-          - { shard: 76, files: lib/atlas_pca/intent_v2.rb, slice: 72, of: 72 }
-          - { shard: 77, files: lib/atlas_pca/intent_wb.rb, slice: 1, of: 12 }
-          - { shard: 78, files: lib/atlas_pca/intent_wb.rb, slice: 2, of: 12 }
-          - { shard: 79, files: lib/atlas_pca/intent_wb.rb, slice: 3, of: 12 }
-          - { shard: 80, files: lib/atlas_pca/intent_wb.rb, slice: 4, of: 12 }
-          - { shard: 81, files: lib/atlas_pca/intent_wb.rb, slice: 5, of: 12 }
-          - { shard: 82, files: lib/atlas_pca/intent_wb.rb, slice: 6, of: 12 }
-          - { shard: 83, files: lib/atlas_pca/intent_wb.rb, slice: 7, of: 12 }
-          - { shard: 84, files: lib/atlas_pca/intent_wb.rb, slice: 8, of: 12 }
-          - { shard: 85, files: lib/atlas_pca/intent_wb.rb, slice: 9, of: 12 }
-          - { shard: 86, files: lib/atlas_pca/intent_wb.rb, slice: 10, of: 12 }
-          - { shard: 87, files: lib/atlas_pca/intent_wb.rb, slice: 11, of: 12 }
-          - { shard: 88, files: lib/atlas_pca/intent_wb.rb, slice: 12, of: 12 }
-          - { shard: 89, files: lib/atlas_pca/predicates.rb, slice: 1, of: 3 }
-          - { shard: 90, files: lib/atlas_pca/predicates.rb, slice: 2, of: 3 }
-          - { shard: 91, files: lib/atlas_pca/predicates.rb, slice: 3, of: 3 }
-          - { shard: 92, files: lib/atlas_pca/safe_regex.rb, slice: 1, of: 6 }
-          - { shard: 93, files: lib/atlas_pca/safe_regex.rb, slice: 2, of: 6 }
-          - { shard: 94, files: lib/atlas_pca/safe_regex.rb, slice: 3, of: 6 }
-          - { shard: 95, files: lib/atlas_pca/safe_regex.rb, slice: 4, of: 6 }
-          - { shard: 96, files: lib/atlas_pca/safe_regex.rb, slice: 5, of: 6 }
-          - { shard: 97, files: lib/atlas_pca/safe_regex.rb, slice: 6, of: 6 }
-          - { shard: 98, files: 'lib/atlas_pca/rack_middleware.rb lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb', slice: 1, of: 1 }
+          - { shard: 1, files: lib/atlas_pca.rb, slice: 1, of: 2 }
+          - { shard: 2, files: lib/atlas_pca.rb, slice: 2, of: 2 }
+          - { shard: 3, files: lib/atlas_pca/intent_v2.rb, slice: 1, of: 19 }
+          - { shard: 4, files: lib/atlas_pca/intent_v2.rb, slice: 2, of: 19 }
+          - { shard: 5, files: lib/atlas_pca/intent_v2.rb, slice: 3, of: 19 }
+          - { shard: 6, files: lib/atlas_pca/intent_v2.rb, slice: 4, of: 19 }
+          - { shard: 7, files: lib/atlas_pca/intent_v2.rb, slice: 5, of: 19 }
+          - { shard: 8, files: lib/atlas_pca/intent_v2.rb, slice: 6, of: 19 }
+          - { shard: 9, files: lib/atlas_pca/intent_v2.rb, slice: 7, of: 19 }
+          - { shard: 10, files: lib/atlas_pca/intent_v2.rb, slice: 8, of: 19 }
+          - { shard: 11, files: lib/atlas_pca/intent_v2.rb, slice: 9, of: 19 }
+          - { shard: 12, files: lib/atlas_pca/intent_v2.rb, slice: 10, of: 19 }
+          - { shard: 13, files: lib/atlas_pca/intent_v2.rb, slice: 11, of: 19 }
+          - { shard: 14, files: lib/atlas_pca/intent_v2.rb, slice: 12, of: 19 }
+          - { shard: 15, files: lib/atlas_pca/intent_v2.rb, slice: 13, of: 19 }
+          - { shard: 16, files: lib/atlas_pca/intent_v2.rb, slice: 14, of: 19 }
+          - { shard: 17, files: lib/atlas_pca/intent_v2.rb, slice: 15, of: 19 }
+          - { shard: 18, files: lib/atlas_pca/intent_v2.rb, slice: 16, of: 19 }
+          - { shard: 19, files: lib/atlas_pca/intent_v2.rb, slice: 17, of: 19 }
+          - { shard: 20, files: lib/atlas_pca/intent_v2.rb, slice: 18, of: 19 }
+          - { shard: 21, files: lib/atlas_pca/intent_v2.rb, slice: 19, of: 19 }
+          - { shard: 22, files: lib/atlas_pca/intent_wb.rb, slice: 1, of: 4 }
+          - { shard: 23, files: lib/atlas_pca/intent_wb.rb, slice: 2, of: 4 }
+          - { shard: 24, files: lib/atlas_pca/intent_wb.rb, slice: 3, of: 4 }
+          - { shard: 25, files: lib/atlas_pca/intent_wb.rb, slice: 4, of: 4 }
+          - { shard: 26, files: lib/atlas_pca/predicates.rb, slice: 1, of: 1 }
+          - { shard: 27, files: lib/atlas_pca/safe_regex.rb, slice: 1, of: 2 }
+          - { shard: 28, files: lib/atlas_pca/safe_regex.rb, slice: 2, of: 2 }
+          - { shard: 29, files: lib/atlas_pca/rack_middleware.rb, slice: 1, of: 2 }
+          - { shard: 30, files: lib/atlas_pca/rack_middleware.rb, slice: 2, of: 2 }
+          - { shard: 31, files: lib/atlas_pca/authorize.rb, slice: 1, of: 4 }
+          - { shard: 32, files: lib/atlas_pca/authorize.rb, slice: 2, of: 4 }
+          - { shard: 33, files: lib/atlas_pca/authorize.rb, slice: 3, of: 4 }
+          - { shard: 34, files: lib/atlas_pca/authorize.rb, slice: 4, of: 4 }
+          - { shard: 35, files: lib/atlas_pca/operations.rb, slice: 1, of: 2 }
+          - { shard: 36, files: lib/atlas_pca/operations.rb, slice: 2, of: 2 }
+          - { shard: 37, files: 'lib/atlas_pca/intent_layers.rb lib/atlas_pca/less_ffi.rb lib/atlas_pca/risk.rb lib/atlas_pca/taint.rb lib/atlas_pca/beacons.rb', slice: 1, of: 1 }
+          - { shard: 38, files: lib/atlas_pca/prohibitions.rb, slice: 1, of: 2 }
+          - { shard: 39, files: lib/atlas_pca/prohibitions.rb, slice: 2, of: 2 }
+          - { shard: 40, files: lib/atlas_pca/contracts.rb, slice: 1, of: 1 }
+          - { shard: 41, files: lib/atlas_pca/plan_lifecycle.rb, slice: 1, of: 1 }
+          - { shard: 42, files: lib/atlas_pca/revocation_staleness.rb, slice: 1, of: 1 }
+          - { shard: 43, files: lib/atlas_pca/assurance.rb, slice: 1, of: 1 }
+          - { shard: 44, files: lib/atlas_pca/stepup.rb, slice: 1, of: 1 }
+          - { shard: 45, files: lib/atlas_pca/store_conformance.rb, slice: 1, of: 1 }
+          - { shard: 46, files: lib/atlas_pca/decision.rb, slice: 1, of: 1 }
+          - { shard: 47, files: lib/atlas_pca/mesh.rb, slice: 1, of: 3 }
+          - { shard: 48, files: lib/atlas_pca/mesh.rb, slice: 2, of: 3 }
+          - { shard: 49, files: lib/atlas_pca/mesh.rb, slice: 3, of: 3 }
+          - { shard: 50, files: lib/atlas_pca/atomic_kv.rb, slice: 1, of: 1 }
+          - { shard: 51, files: lib/atlas_pca/escalation.rb, slice: 1, of: 1 }
+          - { shard: 52, files: lib/atlas_pca/optimistic.rb, slice: 1, of: 1 }
+          - { shard: 53, files: lib/atlas_pca/ledger.rb, slice: 1, of: 1 }
+          - { shard: 54, files: lib/atlas_pca/intent_history.rb, slice: 1, of: 1 }
+          - { shard: 55, files: lib/atlas_pca/actions.rb, slice: 1, of: 3 }
+          - { shard: 56, files: lib/atlas_pca/actions.rb, slice: 2, of: 3 }
+          - { shard: 57, files: lib/atlas_pca/actions.rb, slice: 3, of: 3 }
+          - { shard: 58, files: lib/atlas_pca/actions_registry.rb, slice: 1, of: 2 }
+          - { shard: 59, files: lib/atlas_pca/actions_registry.rb, slice: 2, of: 2 }
+          - { shard: 60, files: lib/atlas_pca/caveat_lang.rb, slice: 1, of: 2 }
+          - { shard: 61, files: lib/atlas_pca/caveat_lang.rb, slice: 2, of: 2 }
+          - { shard: 62, files: lib/atlas_pca/policy_link.rb, slice: 1, of: 1 }
+          - { shard: 63, files: 'lib/atlas_pca/passport.rb lib/atlas_pca/forbid_certificate.rb', slice: 1, of: 1 }
+          - { shard: 64, files: lib/atlas_pca/k3.rb, slice: 1, of: 1 }
+          - { shard: 65, files: lib/atlas_pca/fresh_at.rb, slice: 1, of: 1 }
+          - { shard: 66, files: lib/atlas_pca/pca_grant.rb, slice: 1, of: 1 }
+          - { shard: 67, files: lib/atlas_pca/a2a.rb, slice: 1, of: 1 }
+          - { shard: 68, files: lib/atlas_pca/workflow.rb, slice: 1, of: 1 }
+          - { shard: 69, files: lib/atlas_pca/readside.rb, slice: 1, of: 1 }
+          - { shard: 70, files: lib/atlas_pca/read_vault.rb, slice: 1, of: 1 }
+          - { shard: 71, files: lib/atlas_pca/agent.rb, slice: 1, of: 2 }
+          - { shard: 72, files: lib/atlas_pca/agent.rb, slice: 2, of: 2 }
+          - { shard: 73, files: lib/atlas_pca/lease.rb, slice: 1, of: 1 }
+          - { shard: 74, files: lib/atlas_pca/blueprint.rb, slice: 1, of: 1 }
+          - { shard: 75, files: lib/atlas_pca/obligations.rb, slice: 1, of: 1 }
+          - { shard: 76, files: lib/atlas_pca/missing_context.rb, slice: 1, of: 1 }
+          - { shard: 77, files: lib/atlas_pca/k4.rb, slice: 1, of: 1 }
+          - { shard: 78, files: lib/atlas_pca/approval.rb, slice: 1, of: 1 }
+          - { shard: 79, files: 'lib/atlas_pca/break_glass.rb lib/atlas_pca/policy_classes.rb', slice: 1, of: 1 }
+          - { shard: 80, files: lib/atlas_pca/provenance_gate.rb, slice: 1, of: 1 }
+          - { shard: 81, files: 'lib/atlas_pca/protect.rb lib/atlas_pca/refusal_help.rb', slice: 1, of: 1 }
+          - { shard: 82, files: lib/atlas_pca/sigstore_bundle.rb, slice: 1, of: 3 }
+          - { shard: 83, files: lib/atlas_pca/sigstore_bundle.rb, slice: 2, of: 3 }
+          - { shard: 84, files: lib/atlas_pca/sigstore_bundle.rb, slice: 3, of: 3 }
+          - { shard: 85, files: lib/atlas_pca/arg_provenance.rb, slice: 1, of: 2 }
+          - { shard: 86, files: lib/atlas_pca/arg_provenance.rb, slice: 2, of: 2 }
+          - { shard: 87, files: lib/atlas_pca/undo.rb, slice: 1, of: 1 }
+          - { shard: 88, files: lib/atlas_pca/attest.rb, slice: 1, of: 1 }
+          - { shard: 89, files: lib/atlas_pca/attest/common.rb, slice: 1, of: 2 }
+          - { shard: 90, files: lib/atlas_pca/attest/common.rb, slice: 2, of: 2 }
+          - { shard: 91, files: lib/atlas_pca/attest/der.rb, slice: 1, of: 2 }
+          - { shard: 92, files: lib/atlas_pca/attest/der.rb, slice: 2, of: 2 }
+          - { shard: 93, files: lib/atlas_pca/attest/cert.rb, slice: 1, of: 1 }
+          - { shard: 94, files: lib/atlas_pca/attest/amd.rb, slice: 1, of: 1 }
+          - { shard: 95, files: lib/atlas_pca/attest/azure.rb, slice: 1, of: 1 }
+          - { shard: 96, files: lib/atlas_pca/attest/gcp.rb, slice: 1, of: 1 }
+          - { shard: 97, files: lib/atlas_pca/attest/intel.rb, slice: 1, of: 3 }
+          - { shard: 98, files: lib/atlas_pca/attest/intel.rb, slice: 2, of: 3 }
+          - { shard: 99, files: lib/atlas_pca/attest/intel.rb, slice: 3, of: 3 }
+          - { shard: 100, files: lib/atlas_pca/attest/ocsp.rb, slice: 1, of: 1 }
+          - { shard: 101, files: lib/atlas_pca/attest/xml.rb, slice: 1, of: 1 }
+          - { shard: 102, files: lib/atlas_pca/attest/nvidia.rb, slice: 1, of: 2 }
+          - { shard: 103, files: lib/atlas_pca/attest/nvidia.rb, slice: 2, of: 2 }
+          - { shard: 104, files: lib/atlas_pca/runtime_claim.rb, slice: 1, of: 1 }
+          - { shard: 105, files: lib/atlas_pca/signers_more.rb, slice: 1, of: 1 }
+          - { shard: 106, files: 'lib/atlas_pca/facade.rb lib/atlas_pca/catalog_builtin.rb', slice: 1, of: 1 }
+          - { shard: 107, files: lib/atlas_pca/aggsig.rb, slice: 1, of: 3, module: pairing }
+          - { shard: 108, files: lib/atlas_pca/aggsig.rb, slice: 2, of: 3, module: pairing }
+          - { shard: 109, files: lib/atlas_pca/aggsig.rb, slice: 3, of: 3, module: pairing }
+          - { shard: 110, files: lib/atlas_pca/abe.rb, slice: 1, of: 2, module: pairing }
+          - { shard: 111, files: lib/atlas_pca/abe.rb, slice: 2, of: 2, module: pairing }
+          - { shard: 112, files: lib/atlas_pca/bbs.rb, slice: 1, of: 2, module: pairing }
+          - { shard: 113, files: lib/atlas_pca/bbs.rb, slice: 2, of: 2, module: pairing }
+          - { shard: 114, files: lib/atlas_pca/fame.rb, slice: 1, of: 2, module: pairing }
+          - { shard: 115, files: lib/atlas_pca/fame.rb, slice: 2, of: 2, module: pairing }
+          - { shard: 116, files: lib/atlas_pca/bls12.rb, slice: 1, of: 2, module: pairing }
+          - { shard: 117, files: lib/atlas_pca/bls12.rb, slice: 2, of: 2, module: pairing }
+          - { shard: 118, files: 'lib/atlas_pca/bbs_credential.rb lib/atlas_pca/abe_policy.rb', slice: 1, of: 2, module: pairing }
+          - { shard: 119, files: 'lib/atlas_pca/bbs_credential.rb lib/atlas_pca/abe_policy.rb', slice: 2, of: 2, module: pairing }
+          - { shard: 120, files: lib/atlas_pca/fhe_seal.rb, slice: 1, of: 2, module: fhe }
+          - { shard: 121, files: lib/atlas_pca/fhe_seal.rb, slice: 2, of: 2, module: fhe }
+          - { shard: 122, files: lib/atlas_pca/mpc_lwe_ot.rb, slice: 1, of: 2, module: lwe-ot }
+          - { shard: 123, files: lib/atlas_pca/mpc_lwe_ot.rb, slice: 2, of: 2, module: lwe-ot }
+          - { shard: 124, files: 'lib/atlas_pca/fndsa.rb lib/atlas_pca/fndsa_native.rb', slice: 1, of: 2, module: fndsa }
+          - { shard: 125, files: 'lib/atlas_pca/fndsa.rb lib/atlas_pca/fndsa_native.rb', slice: 2, of: 2, module: fndsa }
+          - { shard: 126, files: lib/atlas_pca/sandbox_wasm.rb, slice: 1, of: 2, module: sandbox-wasm }
+          - { shard: 127, files: lib/atlas_pca/sandbox_wasm.rb, slice: 2, of: 2, module: sandbox-wasm }
+          - { shard: 128, files: lib/atlas_pca/a2a_binding.rb, slice: 1, of: 3 }
+          - { shard: 129, files: lib/atlas_pca/a2a_binding.rb, slice: 2, of: 3 }
+          - { shard: 130, files: lib/atlas_pca/a2a_binding.rb, slice: 3, of: 3 }
+          - { shard: 131, files: lib/atlas_pca/a2a_card.rb, slice: 1, of: 1 }
+          - { shard: 132, files: lib/atlas_pca/acp.rb, slice: 1, of: 4 }
+          - { shard: 133, files: lib/atlas_pca/acp.rb, slice: 2, of: 4 }
+          - { shard: 134, files: lib/atlas_pca/acp.rb, slice: 3, of: 4 }
+          - { shard: 135, files: lib/atlas_pca/acp.rb, slice: 4, of: 4 }
+          - { shard: 136, files: lib/atlas_pca/actions_approval_profiles.rb, slice: 1, of: 1 }
+          - { shard: 137, files: lib/atlas_pca/actions_author.rb, slice: 1, of: 2 }
+          - { shard: 138, files: lib/atlas_pca/actions_author.rb, slice: 2, of: 2 }
+          - { shard: 139, files: lib/atlas_pca/actions_build.rb, slice: 1, of: 1 }
+          - { shard: 140, files: 'lib/atlas_pca/actions_builtin.rb lib/atlas_pca/actions_builtin_data.rb', slice: 1, of: 1 }
+          - { shard: 141, files: lib/atlas_pca/actions_compat.rb, slice: 1, of: 1 }
+          - { shard: 142, files: lib/atlas_pca/actions_confirmation.rb, slice: 1, of: 1 }
+          - { shard: 143, files: lib/atlas_pca/actions_derive.rb, slice: 1, of: 2 }
+          - { shard: 144, files: lib/atlas_pca/actions_derive.rb, slice: 2, of: 2 }
+          - { shard: 145, files: lib/atlas_pca/actions_diff.rb, slice: 1, of: 2 }
+          - { shard: 146, files: lib/atlas_pca/actions_diff.rb, slice: 2, of: 2 }
+          - { shard: 147, files: lib/atlas_pca/actions_effective.rb, slice: 1, of: 1 }
+          - { shard: 148, files: lib/atlas_pca/actions_evolve.rb, slice: 1, of: 1 }
+          - { shard: 149, files: lib/atlas_pca/actions_hosted.rb, slice: 1, of: 2 }
+          - { shard: 150, files: lib/atlas_pca/actions_hosted.rb, slice: 2, of: 2 }
+          - { shard: 151, files: lib/atlas_pca/actions_idpattern.rb, slice: 1, of: 1 }
+          - { shard: 152, files: lib/atlas_pca/actions_import_asyncapi.rb, slice: 1, of: 1 }
+          - { shard: 153, files: lib/atlas_pca/actions_import_common.rb, slice: 1, of: 3 }
+          - { shard: 154, files: lib/atlas_pca/actions_import_common.rb, slice: 2, of: 3 }
+          - { shard: 155, files: lib/atlas_pca/actions_import_common.rb, slice: 3, of: 3 }
+          - { shard: 156, files: lib/atlas_pca/actions_import_eval.rb, slice: 1, of: 2 }
+          - { shard: 157, files: lib/atlas_pca/actions_import_eval.rb, slice: 2, of: 2 }
+          - { shard: 158, files: lib/atlas_pca/actions_import_graphql.rb, slice: 1, of: 2 }
+          - { shard: 159, files: lib/atlas_pca/actions_import_graphql.rb, slice: 2, of: 2 }
+          - { shard: 160, files: lib/atlas_pca/actions_import_grpc.rb, slice: 1, of: 3 }
+          - { shard: 161, files: lib/atlas_pca/actions_import_grpc.rb, slice: 2, of: 3 }
+          - { shard: 162, files: lib/atlas_pca/actions_import_grpc.rb, slice: 3, of: 3 }
+          - { shard: 163, files: lib/atlas_pca/actions_import_jsonschema.rb, slice: 1, of: 1 }
+          - { shard: 164, files: lib/atlas_pca/actions_import_jsre.rb, slice: 1, of: 2 }
+          - { shard: 165, files: lib/atlas_pca/actions_import_jsre.rb, slice: 2, of: 2 }
+          - { shard: 166, files: lib/atlas_pca/actions_import_mcp.rb, slice: 1, of: 1 }
+          - { shard: 167, files: lib/atlas_pca/actions_import_model.rb, slice: 1, of: 1 }
+          - { shard: 168, files: lib/atlas_pca/actions_import_openapi.rb, slice: 1, of: 1 }
+          - { shard: 169, files: 'lib/atlas_pca/actions_import_pipeline.rb lib/atlas_pca/actions_import_rules_data.rb', slice: 1, of: 1 }
+          - { shard: 170, files: lib/atlas_pca/actions_import_suggest.rb, slice: 1, of: 2 }
+          - { shard: 171, files: lib/atlas_pca/actions_import_suggest.rb, slice: 2, of: 2 }
+          - { shard: 172, files: lib/atlas_pca/actions_lint.rb, slice: 1, of: 2 }
+          - { shard: 173, files: lib/atlas_pca/actions_lint.rb, slice: 2, of: 2 }
+          - { shard: 174, files: lib/atlas_pca/actions_render.rb, slice: 1, of: 1 }
+          - { shard: 175, files: lib/atlas_pca/actions_review.rb, slice: 1, of: 1 }
+          - { shard: 176, files: lib/atlas_pca/actions_rules.rb, slice: 1, of: 4 }
+          - { shard: 177, files: lib/atlas_pca/actions_rules.rb, slice: 2, of: 4 }
+          - { shard: 178, files: lib/atlas_pca/actions_rules.rb, slice: 3, of: 4 }
+          - { shard: 179, files: lib/atlas_pca/actions_rules.rb, slice: 4, of: 4 }
+          - { shard: 180, files: lib/atlas_pca/actions_selector.rb, slice: 1, of: 1 }
+          - { shard: 181, files: 'lib/atlas_pca/actions_sync.rb lib/atlas_pca/actions_templates.rb lib/atlas_pca/actions_templates_data.rb', slice: 1, of: 1 }
+          - { shard: 182, files: lib/atlas_pca/actions_test_runner.rb, slice: 1, of: 1 }
+          - { shard: 183, files: lib/atlas_pca/actions_transparency.rb, slice: 1, of: 1 }
+          - { shard: 184, files: lib/atlas_pca/actions_undo.rb, slice: 1, of: 1 }
+          - { shard: 185, files: lib/atlas_pca/actions_yaml_emit.rb, slice: 1, of: 2 }
+          - { shard: 186, files: lib/atlas_pca/actions_yaml_emit.rb, slice: 2, of: 2 }
+          - { shard: 187, files: lib/atlas_pca/actions_yaml_load.rb, slice: 1, of: 1 }
+          - { shard: 188, files: lib/atlas_pca/ada_idna.rb, slice: 1, of: 1 }
+          - { shard: 189, files: lib/atlas_pca/adapters.rb, slice: 1, of: 1 }
+          - { shard: 190, files: lib/atlas_pca/agentcard.rb, slice: 1, of: 2 }
+          - { shard: 191, files: lib/atlas_pca/agentcard.rb, slice: 2, of: 2 }
+          - { shard: 192, files: lib/atlas_pca/agentcard_card.rb, slice: 1, of: 2 }
+          - { shard: 193, files: lib/atlas_pca/agentcard_card.rb, slice: 2, of: 2 }
+          - { shard: 194, files: lib/atlas_pca/analyzer.rb, slice: 1, of: 1 }
+          - { shard: 195, files: lib/atlas_pca/analyzer_core.rb, slice: 1, of: 3 }
+          - { shard: 196, files: lib/atlas_pca/analyzer_core.rb, slice: 2, of: 3 }
+          - { shard: 197, files: lib/atlas_pca/analyzer_core.rb, slice: 3, of: 3 }
+          - { shard: 198, files: lib/atlas_pca/analyzer_coverage.rb, slice: 1, of: 2 }
+          - { shard: 199, files: lib/atlas_pca/analyzer_coverage.rb, slice: 2, of: 2 }
+          - { shard: 200, files: lib/atlas_pca/analyzer_exposure.rb, slice: 1, of: 2 }
+          - { shard: 201, files: lib/atlas_pca/analyzer_exposure.rb, slice: 2, of: 2 }
+          - { shard: 202, files: lib/atlas_pca/analyzer_js.rb, slice: 1, of: 1 }
+          - { shard: 203, files: lib/atlas_pca/analyzer_narrowing.rb, slice: 1, of: 1 }
+          - { shard: 204, files: lib/atlas_pca/analyzer_residual.rb, slice: 1, of: 3 }
+          - { shard: 205, files: lib/atlas_pca/analyzer_residual.rb, slice: 2, of: 3 }
+          - { shard: 206, files: lib/atlas_pca/analyzer_residual.rb, slice: 3, of: 3 }
+          - { shard: 207, files: lib/atlas_pca/analyzer_validate.rb, slice: 1, of: 2 }
+          - { shard: 208, files: lib/atlas_pca/analyzer_validate.rb, slice: 2, of: 2 }
+          - { shard: 209, files: lib/atlas_pca/anthropic.rb, slice: 1, of: 1 }
+          - { shard: 210, files: lib/atlas_pca/ap2.rb, slice: 1, of: 2 }
+          - { shard: 211, files: lib/atlas_pca/ap2.rb, slice: 2, of: 2 }
+          - { shard: 212, files: lib/atlas_pca/ap2_chain.rb, slice: 1, of: 2 }
+          - { shard: 213, files: lib/atlas_pca/ap2_chain.rb, slice: 2, of: 2 }
+          - { shard: 214, files: lib/atlas_pca/ap2_mandates.rb, slice: 1, of: 3 }
+          - { shard: 215, files: lib/atlas_pca/ap2_mandates.rb, slice: 2, of: 3 }
+          - { shard: 216, files: lib/atlas_pca/ap2_mandates.rb, slice: 3, of: 3 }
+          - { shard: 217, files: lib/atlas_pca/ap2_pca.rb, slice: 1, of: 2 }
+          - { shard: 218, files: lib/atlas_pca/ap2_pca.rb, slice: 2, of: 2 }
+          - { shard: 219, files: lib/atlas_pca/attest_eat.rb, slice: 1, of: 3 }
+          - { shard: 220, files: lib/atlas_pca/attest_eat.rb, slice: 2, of: 3 }
+          - { shard: 221, files: lib/atlas_pca/attest_eat.rb, slice: 3, of: 3 }
+          - { shard: 222, files: lib/atlas_pca/attest_eat_admission.rb, slice: 1, of: 1 }
+          - { shard: 223, files: lib/atlas_pca/attest_eat_common.rb, slice: 1, of: 1 }
+          - { shard: 224, files: lib/atlas_pca/attest_eat_pqcosign.rb, slice: 1, of: 1 }
+          - { shard: 225, files: lib/atlas_pca/authzen.rb, slice: 1, of: 2 }
+          - { shard: 226, files: lib/atlas_pca/authzen.rb, slice: 2, of: 2 }
+          - { shard: 227, files: lib/atlas_pca/ciba.rb, slice: 1, of: 4 }
+          - { shard: 228, files: lib/atlas_pca/ciba.rb, slice: 2, of: 4 }
+          - { shard: 229, files: lib/atlas_pca/ciba.rb, slice: 3, of: 4 }
+          - { shard: 230, files: lib/atlas_pca/ciba.rb, slice: 4, of: 4 }
+          - { shard: 231, files: lib/atlas_pca/ciba_conformance.rb, slice: 1, of: 1 }
+          - { shard: 232, files: lib/atlas_pca/compliance.rb, slice: 1, of: 3 }
+          - { shard: 233, files: lib/atlas_pca/compliance.rb, slice: 2, of: 3 }
+          - { shard: 234, files: lib/atlas_pca/compliance.rb, slice: 3, of: 3 }
+          - { shard: 235, files: lib/atlas_pca/connect.rb, slice: 1, of: 4 }
+          - { shard: 236, files: lib/atlas_pca/connect.rb, slice: 2, of: 4 }
+          - { shard: 237, files: lib/atlas_pca/connect.rb, slice: 3, of: 4 }
+          - { shard: 238, files: lib/atlas_pca/connect.rb, slice: 4, of: 4 }
+          - { shard: 239, files: lib/atlas_pca/connect_replay.rb, slice: 1, of: 1 }
+          - { shard: 240, files: lib/atlas_pca/connectors.rb, slice: 1, of: 2 }
+          - { shard: 241, files: lib/atlas_pca/connectors.rb, slice: 2, of: 2 }
+          - { shard: 242, files: lib/atlas_pca/connectors_providers.rb, slice: 1, of: 1 }
+          - { shard: 243, files: lib/atlas_pca/control_evals.rb, slice: 1, of: 2 }
+          - { shard: 244, files: lib/atlas_pca/control_evals.rb, slice: 2, of: 2 }
+          - { shard: 245, files: lib/atlas_pca/control_evals_example.rb, slice: 1, of: 1 }
+          - { shard: 246, files: lib/atlas_pca/dataflow.rb, slice: 1, of: 2 }
+          - { shard: 247, files: lib/atlas_pca/dataflow.rb, slice: 2, of: 2 }
+          - { shard: 248, files: lib/atlas_pca/dlp.rb, slice: 1, of: 1 }
+          - { shard: 249, files: lib/atlas_pca/doctor.rb, slice: 1, of: 4 }
+          - { shard: 250, files: lib/atlas_pca/doctor.rb, slice: 2, of: 4 }
     steps:
       - name: Container toolchain (git, cc for libatlas_less and the FFI stub tests, gh for the baseline download)
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git gcc make libc6-dev gh ca-certificates curl xz-utils zstd gzip openssl libyaml-0-2 libffi8 >/dev/null
+          # an Ubuntu mirror mid-sync ("Packages.gz File has unexpected size") failed 51 shards of run 42743763420 with apt exit 100
+          for attempt in 1 2 3; do apt-get update -qq -o Acquire::Retries=5 && break; [ "$attempt" = 3 ] && exit 100; sleep $((attempt * 30)); done
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends git gcc make libc6-dev gh ca-certificates curl xz-utils zstd gzip openssl libyaml-0-2 libffi8 >/dev/null
           openssl version
           git config --global --add safe.directory '*'
       - uses: actions/checkout@v4
@@ -186,6 +554,16 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
+      - name: Every file of lib/ is in the matrix, every slice present
+        run: |
+          ruby -ryaml -e '
+            rows = YAML.load_file(".github/workflows/mutation.yml")["jobs"].values.flat_map { |x| x.dig("strategy", "matrix", "include") || [] }
+            bad = rows.group_by { |r| r["files"] }.reject { |_, g| g.map { |r| r["slice"] }.sort == (1..g[0]["of"]).to_a && g.all? { |r| r["of"] == g[0]["of"] } }.keys
+            abort "::error::missing or uneven slices: #{bad}" unless bad.empty?
+            files = rows.flat_map { |r| r["files"].split }.uniq.sort
+            tree = Dir.glob("lib/**/*.rb").sort
+            abort "::error::not mutated: #{tree - files}; not in the tree: #{files - tree}" unless files == tree
+          '
       - run: gem install --no-document parser
       - uses: actions/setup-node@v4
         with:
@@ -194,6 +572,62 @@ jobs:
         run: .github/scripts/mutation-layout.sh "$CRATE"
         env:
           LESS: '1'
+      - name: Module toolchain (C++ runtime and headers for the gem builds)
+        if: ${{ matrix.module }}
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends cmake g++ pkg-config libclang-dev libffi-dev zlib1g-dev >/dev/null
+      - name: Rust toolchain (the wasmtime gem builds its extension)
+        if: ${{ matrix.module == 'sandbox-wasm' }}
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: ffi (module shards)
+        if: ${{ matrix.module }}
+        run: |
+          gem install ffi --no-document
+          # the oracle's fresh-ruby load probe runs with --disable-gems: the ffi gem is reached through RUBYLIB
+          echo "RUBYLIB=$(ruby -e 'puts Gem::Specification.find_by_name("ffi").full_require_paths.join(":")')" >> "$GITHUB_ENV"
+      # the native libraries are built ONCE per module by the natives job (same container image), not once per shard
+      - name: Native libraries built by the natives job
+        if: ${{ matrix.module }}
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.module }}
+          path: ${{ runner.temp }}/native
+      - name: Native library environment
+        if: ${{ matrix.module }}
+        run: |
+          n="$RUNNER_TEMP/native"
+          case "${{ matrix.module }}" in
+            pairing) echo "PCA_BLST_LIB=$n/libblst.so" >> "$GITHUB_ENV" ;;
+            fhe) { echo "ATLAS_PCA_LIBSEALC=$n/libsealc.so"; echo "PCA_FHE_SEAL_CORPUS=$n/fhe-seal.json.gz"; echo "PCA_FHE_SEAL_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            lwe-ot) { echo "ATLAS_PCA_LIBLWEOT=$n/liblweot.so"; echo "ATLAS_PCA_LIBLWEOT_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            fndsa) { echo "ATLAS_PCA_LIBFNDSA=$n/libfndsa.so"; echo "ATLAS_PCA_LIBFNDSA_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            zk) { echo "ATLAS_PCA_LIBPCAZK=$n/libpcazk.so"; echo "ATLAS_PCA_LIBPCAZK_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            ada) { echo "ATLAS_PCA_LIBADA=$n/libada.so"; echo "PCA_ADA_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            sandbox-wasm)
+              gem install wasmtime minitest --no-document
+              chmod +x "$n/pca-wasmtime-host"
+              { echo "PCA_WASMTIME_HOST_BIN=$n/pca-wasmtime-host"; echo "PCA_WASMTIME_HOST_SHA256=$(cat "$n/host.sha256")"; } >> "$GITHUB_ENV" ;;
+          esac
+      - name: Module replay tests as kill entries
+        if: ${{ matrix.module }}
+        run: |
+          case "${{ matrix.module }}" in
+            pairing)      t="test/test_ref_aggsig.rb test/test_ref_bbs.rb test/test_bbs_kat.rb test/test_ref_abe.rb test/test_fame_pyecc.rb" ;;
+            fhe)          t="test/test_fhe_seal.rb" ;;
+            lwe-ot)       t="test/test_ref_mpc_endemic.rb" ;;
+            fndsa)        t="test/test_ref_fndsa.rb test/test_fndsa_native.rb test/test_fndsa_core.rb test/test_fndsa_e2e.rb" ;;
+            zk)           t="test/test_zk_native.rb" ;;
+            ada)          t="test/test_ref_entropy.rb" ;;
+            sandbox-wasm) t="test/test_ref_sandbox_wasm.rb" ;;
+          esac
+          cp .github/scripts/module-kill.rb "$MONO/sdks/$CRATE/test/kill/zz_module_kill.rb"
+          echo "MUT_MODULE_TESTS=$t" >> "$GITHUB_ENV"
+      - name: RSA DPoP oracle corpus (generated, never committed)
+        run: .github/scripts/dpop-rsa-corpus.sh "$MONO/sdks/ruby-pca/test-data/ref-dpop-rsa.json.gz"
+      - name: Private-key oracle cases (generated, never committed)
+        run: .github/scripts/gen-secret-corpus.sh "$MONO/sdks/ruby-pca/test-data" oprf:oprf core-frost-java:core-frost-java mpc-ot:mpc-ot attest-eat:attest-eat abe:abe frost-dkg:frost-dkg
       - name: Reason snapshot from the unmutated source (this runner's backends)
         working-directory: ${{ env.MONO }}/sdks/${{ env.CRATE }}
         run: |
@@ -202,26 +636,36 @@ jobs:
           n="$(gzip -dc test-data/reasons.tsv.gz | diff - "$RUNNER_TEMP/reasons-committed.tsv" | grep -c '^[<>]' || true)"
           [ "$n" = 0 ] || echo "::warning::the committed test-data/reasons.tsv.gz differs from this runner's output in $n line(s): stale, or other backends. The oracle uses the runner's (regenerate: ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz)"
       - name: Baseline results (targeted mode)
-        if: ${{ !inputs.full }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASELINE: ${{ inputs.baseline_run }}
+        if: ${{ !(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]')) && needs.pool.outputs.have == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-pool
+          path: ${{ runner.temp }}/base
+      - name: Baseline results (point the carry at them)
+        if: ${{ !(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]')) && needs.pool.outputs.have == 'true' }}
         run: |
-          ids="$BASELINE"
-          if [ -z "$ids" ]; then
-            ids="$(gh run list -R "$GITHUB_REPOSITORY" --workflow mutation.yml --branch "$GITHUB_REF_NAME" --limit 20 \
-                     --json databaseId -q '.[].databaseId' | grep -vx "$GITHUB_RUN_ID" || true)"
-          fi
-          for id in $ids; do
-            rm -rf "$RUNNER_TEMP/base"
-            # every shard's results: a large file is sliced by mutant id, and ids move between slices when the source changes
-            if gh run download "$id" -R "$GITHUB_REPOSITORY" -p 'mut-results-*' -D "$RUNNER_TEMP/base" 2>/dev/null \
-               && [ -n "$(find "$RUNNER_TEMP/base" -name '*.src.rb' -print -quit)" ]; then
-              echo "BASE=$RUNNER_TEMP/base" >> "$GITHUB_ENV"
-              echo "targeted: seeded from run $id ($(find "$RUNNER_TEMP/base" -name '*.json' | wc -l) results file(s))"; exit 0
-            fi
-          done
-          echo "::notice::no baseline results found, full run (seeds the next run)"
+          [ -n "$(find "$RUNNER_TEMP/base" -name '*.src.rb' -print -quit)" ] || { echo "::error::baseline pool holds no results"; exit 1; }
+          echo "BASE=$RUNNER_TEMP/base" >> "$GITHUB_ENV"
+          echo "targeted: seeded from the baseline pool ($(find "$RUNNER_TEMP/base" -name '*.json' | wc -l) results file(s))"
+      # A survivor of the baseline run stands when this run's oracle is byte-identical to the one it ran against: every tracked file of the
+      # checkout (tests, kill tests, lib, corpus inputs) plus the shared corpus and the mutator, ledgers aside. Any change at all (a new kill
+      # test may kill it) and the survivors run again; kills carry as before.
+      - name: Oracle fingerprint (for carrying survivors)
+        run: |
+          : > "$RUNNER_TEMP/no-excludes.txt"
+          node "$MONO/tools/pca-audit/mut-carry/snapshot.mjs" make --root="$GITHUB_WORKSPACE" --exclude-list="$RUNNER_TEMP/no-excludes.txt" \
+            --corpus-root="$MONO" --out="$RUNNER_TEMP/fp-snap" --cfg="ruby-mutate $(ruby -v) $(openssl version)" \
+            --tool-files="$MONO/tools/pca-audit/ruby-mutate/mutate.rb,$MONO/tools/pca-audit/ruby-mutate/oracle.rb"
+          fp="$(node -e '
+            const fs = require("fs"), path = require("path"), h = require("crypto").createHash("sha256");
+            const L = /(^|\/)(mutation-run-errors|mutation-equivalents|[^/]*mutants-ledger)[^/]*\.json$/;
+            const walk = (d, b = d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name), b) : [path.relative(b, path.join(d, e.name))]);
+            const root = process.argv[1]; h.update(JSON.parse(fs.readFileSync(root + "/meta.json", "utf8")).tool_hash);
+            for (const r of walk(root).sort()) { if (r === "meta.json" || L.test(r)) continue; h.update(r + "\0"); h.update(fs.readFileSync(path.join(root, r))); }
+            console.log(h.digest("hex"));
+          ' "$RUNNER_TEMP/fp-snap")"
+          echo "ORACLE_FP=$fp" >> "$GITHUB_ENV"
+          echo "oracle fingerprint $fp"
       - name: Mutate
         working-directory: ${{ env.MONO }}/tools/pca-audit/ruby-mutate
         env:
@@ -230,8 +674,10 @@ jobs:
           OF: ${{ matrix.of }}
           # the oracle refuses to run on a host without ML-DSA / SLH-DSA / LESS (a PQ-less shard silently skips the PQ cases)
           MUT_REQUIRE_PQ: '1'
+          # module shards: the module's replay tests (module-kill.rb) run before the rest of the registry
+          MUT_FIRST: ${{ matrix.module && 'mod_' || '' }}
         run: |
-          # a mutant that allocates without bound must die alone (killed), not exhaust the runner
+          # a mutant that allocates without bound dies alone (NoMemoryError: a RUN ERROR, ledgered per mutant), not the runner
           ulimit -v 6291456
           : > "$RUNNER_TEMP/raws.tsv"
           mkdir -p "$RUNNER_TEMP/mut-results"
@@ -243,7 +689,11 @@ jobs:
             ruby mutate.rb "$F" --list > "$RUNNER_TEMP/list.tsv" 2> >(grep --line-buffered -v 'warning: parser\|Please see\|is loading parser' >&2)
             ids="$(awk -F'\t' -v k="$SLICE" -v m="$OF" '($1 % m) == (k - 1) { printf "%s%s", s, $1; s="," }' "$RUNNER_TEMP/list.tsv")"
             echo "$f: $(wc -l < "$RUNNER_TEMP/list.tsv") mutants, $(tr ',' '\n' <<<"$ids" | grep -c .) in slice $SLICE/$OF"
-            [ -n "$ids" ] || { echo "::error::no mutants for $f"; exit 1; }
+            if [ -z "$ids" ]; then
+              # a file of data only (no def: constants and heredocs) has nothing to mutate; code with no mutant is a mutator failure
+              if [ ! -s "$RUNNER_TEMP/list.tsv" ] && ! grep -qE '^\s*def ' "$F"; then echo "::notice::$f has no code to mutate (data only)"; continue; fi
+              echo "::error::no mutants for $f"; exit 1
+            fi
             # a SURVIVING mutant of an Intent Layer v2 file runs the whole mutation-differential corpus (~14k cases, minutes);
             # every other file skips those tests, so a hung mutant there is cut after 5 minutes
             case "$f" in lib/atlas_pca/intent_*.rb) tmo=900 ;; *) tmo=300 ;; esac
@@ -251,7 +701,11 @@ jobs:
             if [ -n "${BASE:-}" ]; then
               prevs="$(find "$BASE" -name "$slug.json" | sort | paste -sd, -)"
               src="$(find "$BASE" -name "$slug.src.rb" -print -quit)"
-              if [ -n "$prevs" ] && [ -n "$src" ]; then carry=(--carry "$prevs" --carry-src "$src")
+              if [ -n "$prevs" ] && [ -n "$src" ]; then
+                carry=(--carry "$prevs" --carry-src "$src")
+                # same oracle as the baseline's: its survivors stand too
+                bfp="$(find "$BASE" -name "$slug.fp" -print -quit)"
+                if [ -n "$bfp" ] && [ "$(cat "$bfp")" = "$ORACLE_FP" ]; then carry+=(--carry-survived); echo "$f: oracle identical to the baseline's, survivors carried"; fi
               else echo "::notice::$f: no baseline results, full run of the slice"; fi
             fi
             ruby mutate.rb "$F" --jobs 4 --timeout "$tmo" --only "$ids" "${carry[@]}" > "$out" 2> >(grep --line-buffered -v 'warning: parser\|Please see\|is loading parser' >&2) || {
@@ -261,7 +715,7 @@ jobs:
               exit "$rc"; }
             printf '%s\t%s\n' "$f" "$out" >> "$RUNNER_TEMP/raws.tsv"
             # the next run's baseline: this slice's results (carried ones included) + the source they were taken on
-            cp "$out" "$RUNNER_TEMP/mut-results/$slug.json"; cp "$F" "$RUNNER_TEMP/mut-results/$slug.src.rb"
+            cp "$out" "$RUNNER_TEMP/mut-results/$slug.json"; cp "$F" "$RUNNER_TEMP/mut-results/$slug.src.rb"; printf '%s' "$ORACLE_FP" > "$RUNNER_TEMP/mut-results/$slug.fp"
           done
       - name: Report
         run: |
@@ -275,13 +729,913 @@ jobs:
               }
             }
             fs.writeFileSync("counts.json", JSON.stringify(counts)); fs.writeFileSync("survivors.json", JSON.stringify(surv));
+            // gate honesty: a mutant decided by a stack overflow, the memory cap, a signal or the time limit (no test answered wrong)
+            // is listed here, and the merge fails on each one without a per-mutant reason in mutation-run-errors.json (BRIEF: a
+            // timeout is not a kill by itself; its entry proves the MUTANT loops or allocates without bound)
+            const errs = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8")))
+                if (/^(RUN_ERROR|KILLED\(timeout)/.test(String(m.status))) errs.push({ file, fn: m.fn ?? null, line: m.line_text, occurrence: m.occurrence, mutant: m.mutant, lineno: m.line, evidence: m.status });
+            }
+            fs.writeFileSync("run-errors-${{ matrix.shard }}.json", JSON.stringify(errs, null, 1));
+            // killed mutants whose site the survivor ledger or the run-error ledger names: the dead-minion rule of the merge (an equivalent
+            // entry whose mutant was KILLED this run is a notice, not a stale entry) and the racy run-error rule read them
+            const sk = (e) => [e.file, e.mutant, String(e.line || "").trim(), e.occurrence ?? 1].join("\u0000");
+            const named = new Set();
+            for (const p of [process.env.MONO + "/tools/pca-audit/native-mutation-equivalents.json", process.env.MONO + "/sdks/ruby-pca/mutation-equivalents.part.json", process.env.MONO + "/sdks/ruby-pca/mutation-run-errors.json"]) {
+              if (!fs.existsSync(p)) continue;
+              const j = JSON.parse(fs.readFileSync(p, "utf8"));
+              for (const e of Array.isArray(j) ? j : j.equivalents) if (!e.crate || e.crate === "ruby-pca") named.add(sk(e));
+            }
+            const kd = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8")))
+                if (/^KILLED/.test(String(m.status)) && !/^KILLED\(timeout/.test(String(m.status)) && named.has(sk({ file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence })))
+                  kd.push({ file, fn: m.fn ?? null, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, status: m.status });
+            }
+            fs.writeFileSync("killed-equivalents-${{ matrix.shard }}.json", JSON.stringify(kd));
+            const tmo = Object.entries(counts).filter(([k]) => k.startsWith("KILLED(timeout") || k === "RUN_ERROR(timeout)").reduce((a, [, n]) => a + n, 0);
+            const dl = counts["KILLED(deadline)"] || 0, cr = counts["KILLED(crash)"] || 0;
+            console.log(`run errors: ${errs.length}; timeouts: ${tmo}; killed-by-deadline: ${dl}; killed-by-crash: ${cr}`);
           ' "$RUNNER_TEMP/raws.tsv"
           node .github/scripts/mutation-shard-report.mjs --crate="$CRATE" --shard=${{ matrix.shard }} --of="$SHARDS" --tool=ruby-mutate \
             --counts=counts.json --survivors=survivors.json --out=shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.shard }}
-          path: shard-${{ matrix.shard }}.json
+          path: |
+            shard-${{ matrix.shard }}.json
+            run-errors-${{ matrix.shard }}.json
+            killed-equivalents-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mut-results-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mut-results/
+          retention-days: 30
+
+  shard-2:
+    needs: [reuse, pool, natives]
+    if: ${{ needs.reuse.outputs.skip != 'true' && (!cancelled() && needs.pool.result != 'failure') }}
+    name: shard ${{ matrix.shard }}/605 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
+    # the ubuntu-26.04 userland (OpenSSL 3.5: ML-DSA / SLH-DSA) in a container on the general runner pool: the
+    # ubuntu-26.04 hosted image has a much smaller concurrency pool (~14 jobs where the plan allows 60)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+      env:
+        LANG: C.UTF-8
+        LC_ALL: C.UTF-8
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 256 # Enterprise plan: 500 concurrent jobs org-wide; GitHub queues anything above that
+      matrix:
+        include:
+          - { shard: 251, files: lib/atlas_pca/doctor.rb, slice: 3, of: 4 }
+          - { shard: 252, files: lib/atlas_pca/doctor.rb, slice: 4, of: 4 }
+          - { shard: 253, files: lib/atlas_pca/dpop.rb, slice: 1, of: 2 }
+          - { shard: 254, files: lib/atlas_pca/dpop.rb, slice: 2, of: 2 }
+          - { shard: 255, files: lib/atlas_pca/erc7715.rb, slice: 1, of: 1 }
+          - { shard: 256, files: lib/atlas_pca/events.rb, slice: 1, of: 1 }
+          - { shard: 257, files: lib/atlas_pca/evidence.rb, slice: 1, of: 2 }
+          - { shard: 258, files: lib/atlas_pca/evidence.rb, slice: 2, of: 2 }
+          - { shard: 259, files: lib/atlas_pca/evidence_cli.rb, slice: 1, of: 1 }
+          - { shard: 260, files: lib/atlas_pca/evidence_verify.rb, slice: 1, of: 4 }
+          - { shard: 261, files: lib/atlas_pca/evidence_verify.rb, slice: 2, of: 4 }
+          - { shard: 262, files: lib/atlas_pca/evidence_verify.rb, slice: 3, of: 4 }
+          - { shard: 263, files: lib/atlas_pca/evidence_verify.rb, slice: 4, of: 4 }
+          - { shard: 264, files: lib/atlas_pca/explain.rb, slice: 1, of: 3 }
+          - { shard: 265, files: lib/atlas_pca/explain.rb, slice: 2, of: 3 }
+          - { shard: 266, files: lib/atlas_pca/explain.rb, slice: 3, of: 3 }
+          - { shard: 267, files: lib/atlas_pca/explain_js.rb, slice: 1, of: 1 }
+          - { shard: 268, files: lib/atlas_pca/fetch.rb, slice: 1, of: 2 }
+          - { shard: 269, files: lib/atlas_pca/fetch.rb, slice: 2, of: 2 }
+          - { shard: 270, files: lib/atlas_pca/fhe.rb, slice: 1, of: 1 }
+          - { shard: 271, files: lib/atlas_pca/frost.rb, slice: 1, of: 1 }
+          - { shard: 272, files: lib/atlas_pca/gateway.rb, slice: 1, of: 4 }
+          - { shard: 273, files: lib/atlas_pca/gateway.rb, slice: 2, of: 4 }
+          - { shard: 274, files: lib/atlas_pca/gateway.rb, slice: 3, of: 4 }
+          - { shard: 275, files: lib/atlas_pca/gateway.rb, slice: 4, of: 4 }
+          - { shard: 276, files: lib/atlas_pca/gnap.rb, slice: 1, of: 4 }
+          - { shard: 277, files: lib/atlas_pca/gnap.rb, slice: 2, of: 4 }
+          - { shard: 278, files: lib/atlas_pca/gnap.rb, slice: 3, of: 4 }
+          - { shard: 279, files: lib/atlas_pca/gnap.rb, slice: 4, of: 4 }
+          - { shard: 280, files: lib/atlas_pca/goal_binding.rb, slice: 1, of: 1 }
+          - { shard: 281, files: lib/atlas_pca/goal_card.rb, slice: 1, of: 1 }
+          - { shard: 282, files: lib/atlas_pca/goal_codec.rb, slice: 1, of: 2 }
+          - { shard: 283, files: lib/atlas_pca/goal_codec.rb, slice: 2, of: 2 }
+          - { shard: 284, files: lib/atlas_pca/goal_compiler.rb, slice: 1, of: 1 }
+          - { shard: 285, files: lib/atlas_pca/goal_crc.rb, slice: 1, of: 1 }
+          - { shard: 286, files: lib/atlas_pca/goal_digests.rb, slice: 1, of: 1 }
+          - { shard: 287, files: lib/atlas_pca/goal_disambiguate.rb, slice: 1, of: 1 }
+          - { shard: 288, files: lib/atlas_pca/goal_drift.rb, slice: 1, of: 1 }
+          - { shard: 289, files: lib/atlas_pca/goal_error.rb, slice: 1, of: 1 }
+          - { shard: 290, files: lib/atlas_pca/goal_examples.rb, slice: 1, of: 2 }
+          - { shard: 291, files: lib/atlas_pca/goal_examples.rb, slice: 2, of: 2 }
+          - { shard: 292, files: lib/atlas_pca/goal_fmt.rb, slice: 1, of: 1 }
+          - { shard: 293, files: lib/atlas_pca/goal_interpret.rb, slice: 1, of: 3 }
+          - { shard: 294, files: lib/atlas_pca/goal_interpret.rb, slice: 2, of: 3 }
+          - { shard: 295, files: lib/atlas_pca/goal_interpret.rb, slice: 3, of: 3 }
+          - { shard: 296, files: lib/atlas_pca/goal_js.rb, slice: 1, of: 1 }
+          - { shard: 297, files: lib/atlas_pca/goal_kernel.rb, slice: 1, of: 4 }
+          - { shard: 298, files: lib/atlas_pca/goal_kernel.rb, slice: 2, of: 4 }
+          - { shard: 299, files: lib/atlas_pca/goal_kernel.rb, slice: 3, of: 4 }
+          - { shard: 300, files: lib/atlas_pca/goal_kernel.rb, slice: 4, of: 4 }
+          - { shard: 301, files: lib/atlas_pca/goal_legacy.rb, slice: 1, of: 1 }
+          - { shard: 302, files: lib/atlas_pca/goal_normalize.rb, slice: 1, of: 1 }
+          - { shard: 303, files: lib/atlas_pca/goal_nversion.rb, slice: 1, of: 1 }
+          - { shard: 304, files: 'lib/atlas_pca/goal_ontologies.rb lib/atlas_pca/goal_ontologies_data.rb', slice: 1, of: 1 }
+          - { shard: 305, files: lib/atlas_pca/goal_ontology.rb, slice: 1, of: 4 }
+          - { shard: 306, files: lib/atlas_pca/goal_ontology.rb, slice: 2, of: 4 }
+          - { shard: 307, files: lib/atlas_pca/goal_ontology.rb, slice: 3, of: 4 }
+          - { shard: 308, files: lib/atlas_pca/goal_ontology.rb, slice: 4, of: 4 }
+          - { shard: 309, files: lib/atlas_pca/goal_precedent.rb, slice: 1, of: 1 }
+          - { shard: 310, files: lib/atlas_pca/goal_refsem.rb, slice: 1, of: 2 }
+          - { shard: 311, files: lib/atlas_pca/goal_refsem.rb, slice: 2, of: 2 }
+          - { shard: 312, files: lib/atlas_pca/goal_review.rb, slice: 1, of: 2 }
+          - { shard: 313, files: lib/atlas_pca/goal_review.rb, slice: 2, of: 2 }
+          - { shard: 314, files: lib/atlas_pca/goal_roundtrip.rb, slice: 1, of: 1 }
+          - { shard: 315, files: lib/atlas_pca/goal_selectors.rb, slice: 1, of: 2 }
+          - { shard: 316, files: lib/atlas_pca/goal_selectors.rb, slice: 2, of: 2 }
+          - { shard: 317, files: lib/atlas_pca/goal_sign.rb, slice: 1, of: 1 }
+          - { shard: 318, files: lib/atlas_pca/grants.rb, slice: 1, of: 2 }
+          - { shard: 319, files: lib/atlas_pca/grants.rb, slice: 2, of: 2 }
+          - { shard: 320, files: lib/atlas_pca/grants_list.rb, slice: 1, of: 1 }
+          - { shard: 321, files: lib/atlas_pca/grants_service.rb, slice: 1, of: 3 }
+          - { shard: 322, files: lib/atlas_pca/grants_service.rb, slice: 2, of: 3 }
+          - { shard: 323, files: lib/atlas_pca/grants_service.rb, slice: 3, of: 3 }
+          - { shard: 324, files: lib/atlas_pca/grants_shadow.rb, slice: 1, of: 1 }
+          - { shard: 325, files: lib/atlas_pca/harness.rb, slice: 1, of: 1 }
+          - { shard: 326, files: lib/atlas_pca/idjag.rb, slice: 1, of: 1 }
+          - { shard: 327, files: lib/atlas_pca/immune.rb, slice: 1, of: 2 }
+          - { shard: 328, files: lib/atlas_pca/immune.rb, slice: 2, of: 2 }
+          - { shard: 329, files: lib/atlas_pca/intent_classifier.rb, slice: 1, of: 1 }
+          - { shard: 330, files: lib/atlas_pca/intent_clopper.rb, slice: 1, of: 1 }
+          - { shard: 331, files: lib/atlas_pca/intent_compilers.rb, slice: 1, of: 1 }
+          - { shard: 332, files: lib/atlas_pca/intent_effects.rb, slice: 1, of: 1 }
+          - { shard: 333, files: lib/atlas_pca/intent_frames.rb, slice: 1, of: 1 }
+          - { shard: 334, files: lib/atlas_pca/intent_jit.rb, slice: 1, of: 1 }
+          - { shard: 335, files: lib/atlas_pca/intent_layers_wallet.rb, slice: 1, of: 1 }
+          - { shard: 336, files: lib/atlas_pca/intent_learner.rb, slice: 1, of: 3 }
+          - { shard: 337, files: lib/atlas_pca/intent_learner.rb, slice: 2, of: 3 }
+          - { shard: 338, files: lib/atlas_pca/intent_learner.rb, slice: 3, of: 3 }
+          - { shard: 339, files: lib/atlas_pca/intent_map.rb, slice: 1, of: 1 }
+          - { shard: 340, files: lib/atlas_pca/intent_map_commit.rb, slice: 1, of: 1 }
+          - { shard: 341, files: lib/atlas_pca/intent_mapkit.rb, slice: 1, of: 2 }
+          - { shard: 342, files: lib/atlas_pca/intent_mapkit.rb, slice: 2, of: 2 }
+          - { shard: 343, files: lib/atlas_pca/intent_metrics.rb, slice: 1, of: 1 }
+          - { shard: 344, files: lib/atlas_pca/intent_multi.rb, slice: 1, of: 1 }
+          - { shard: 345, files: lib/atlas_pca/intent_multi_agg.rb, slice: 1, of: 1 }
+          - { shard: 346, files: lib/atlas_pca/intent_omega.rb, slice: 1, of: 2 }
+          - { shard: 347, files: lib/atlas_pca/intent_omega.rb, slice: 2, of: 2 }
+          - { shard: 348, files: lib/atlas_pca/intent_policy.rb, slice: 1, of: 1 }
+          - { shard: 349, files: lib/atlas_pca/intent_profile.rb, slice: 1, of: 2 }
+          - { shard: 350, files: lib/atlas_pca/intent_profile.rb, slice: 2, of: 2 }
+          - { shard: 351, files: lib/atlas_pca/intent_provenance.rb, slice: 1, of: 1 }
+          - { shard: 352, files: lib/atlas_pca/intent_ramp.rb, slice: 1, of: 1 }
+          - { shard: 353, files: lib/atlas_pca/intent_refine.rb, slice: 1, of: 1 }
+          - { shard: 354, files: lib/atlas_pca/intent_region.rb, slice: 1, of: 1 }
+          - { shard: 355, files: lib/atlas_pca/intent_render.rb, slice: 1, of: 2 }
+          - { shard: 356, files: lib/atlas_pca/intent_render.rb, slice: 2, of: 2 }
+          - { shard: 357, files: lib/atlas_pca/intent_required.rb, slice: 1, of: 1 }
+          - { shard: 358, files: lib/atlas_pca/intent_runtime.rb, slice: 1, of: 1 }
+          - { shard: 359, files: lib/atlas_pca/intent_schema.rb, slice: 1, of: 1 }
+          - { shard: 360, files: lib/atlas_pca/intent_slots.rb, slice: 1, of: 1 }
+          - { shard: 361, files: lib/atlas_pca/intent_statement.rb, slice: 1, of: 1 }
+          - { shard: 362, files: lib/atlas_pca/intent_trajectory.rb, slice: 1, of: 1 }
+          - { shard: 363, files: lib/atlas_pca/intent_ux.rb, slice: 1, of: 1 }
+          - { shard: 364, files: lib/atlas_pca/intent_witnesses.rb, slice: 1, of: 1 }
+          - { shard: 365, files: lib/atlas_pca/intent_world.rb, slice: 1, of: 1 }
+          - { shard: 366, files: lib/atlas_pca/invariants.rb, slice: 1, of: 2 }
+          - { shard: 367, files: lib/atlas_pca/invariants.rb, slice: 2, of: 2 }
+          - { shard: 368, files: lib/atlas_pca/jose.rb, slice: 1, of: 2 }
+          - { shard: 369, files: lib/atlas_pca/jose.rb, slice: 2, of: 2 }
+          - { shard: 370, files: lib/atlas_pca/js_compat.rb, slice: 1, of: 1 }
+          - { shard: 371, files: 'lib/atlas_pca/langchain.rb lib/atlas_pca/llamaindex.rb', slice: 1, of: 1 }
+          - { shard: 372, files: lib/atlas_pca/mcp.rb, slice: 1, of: 3 }
+          - { shard: 373, files: lib/atlas_pca/mcp.rb, slice: 2, of: 3 }
+          - { shard: 374, files: lib/atlas_pca/mcp.rb, slice: 3, of: 3 }
+          - { shard: 375, files: lib/atlas_pca/mpc.rb, slice: 1, of: 1 }
+          - { shard: 376, files: lib/atlas_pca/mpc_ec.rb, slice: 1, of: 1 }
+          - { shard: 377, files: lib/atlas_pca/mpc_kem_ot.rb, slice: 1, of: 1 }
+          - { shard: 378, files: lib/atlas_pca/mpc_libcrypto.rb, slice: 1, of: 1 }
+          - { shard: 379, files: lib/atlas_pca/mpc_mascot.rb, slice: 1, of: 1 }
+          - { shard: 380, files: lib/atlas_pca/mpc_net.rb, slice: 1, of: 2 }
+          - { shard: 381, files: lib/atlas_pca/mpc_net.rb, slice: 2, of: 2 }
+          - { shard: 382, files: 'lib/atlas_pca/mpc_net/certs.rb lib/atlas_pca/mpc_net/clock.rb', slice: 1, of: 1 }
+          - { shard: 383, files: lib/atlas_pca/mpc_net/faults.rb, slice: 1, of: 1 }
+          - { shard: 384, files: lib/atlas_pca/mpc_net/forensics.rb, slice: 1, of: 1 }
+          - { shard: 385, files: lib/atlas_pca/mpc_net/gadget.rb, slice: 1, of: 1 }
+          - { shard: 386, files: lib/atlas_pca/mpc_net/launch_local.rb, slice: 1, of: 1 }
+          - { shard: 387, files: lib/atlas_pca/mpc_net/mesh.rb, slice: 1, of: 2 }
+          - { shard: 388, files: lib/atlas_pca/mpc_net/mesh.rb, slice: 2, of: 2 }
+          - { shard: 389, files: lib/atlas_pca/mpc_net/offline.rb, slice: 1, of: 2 }
+          - { shard: 390, files: lib/atlas_pca/mpc_net/offline.rb, slice: 2, of: 2 }
+          - { shard: 391, files: lib/atlas_pca/mpc_net/ot_net.rb, slice: 1, of: 1 }
+          - { shard: 392, files: lib/atlas_pca/mpc_net/party_main.rb, slice: 1, of: 1 }
+          - { shard: 393, files: lib/atlas_pca/mpc_net/protocol.rb, slice: 1, of: 2 }
+          - { shard: 394, files: lib/atlas_pca/mpc_net/protocol.rb, slice: 2, of: 2 }
+          - { shard: 395, files: lib/atlas_pca/mpc_ot.rb, slice: 1, of: 2 }
+          - { shard: 396, files: lib/atlas_pca/mpc_ot.rb, slice: 2, of: 2 }
+          - { shard: 397, files: lib/atlas_pca/mpc_otx.rb, slice: 1, of: 1 }
+          - { shard: 398, files: lib/atlas_pca/mpc_spdz.rb, slice: 1, of: 1 }
+          - { shard: 399, files: lib/atlas_pca/notary.rb, slice: 1, of: 2 }
+          - { shard: 400, files: lib/atlas_pca/notary.rb, slice: 2, of: 2 }
+          - { shard: 401, files: lib/atlas_pca/oauth.rb, slice: 1, of: 2 }
+          - { shard: 402, files: lib/atlas_pca/oauth.rb, slice: 2, of: 2 }
+          - { shard: 403, files: lib/atlas_pca/oidc.rb, slice: 1, of: 3 }
+          - { shard: 404, files: lib/atlas_pca/oidc.rb, slice: 2, of: 3 }
+          - { shard: 405, files: lib/atlas_pca/oidc.rb, slice: 3, of: 3 }
+          - { shard: 406, files: lib/atlas_pca/openai.rb, slice: 1, of: 1 }
+          - { shard: 407, files: lib/atlas_pca/openai_agents.rb, slice: 1, of: 2 }
+          - { shard: 408, files: lib/atlas_pca/openai_agents.rb, slice: 2, of: 2 }
+          - { shard: 409, files: lib/atlas_pca/oprf.rb, slice: 1, of: 1 }
+          - { shard: 410, files: lib/atlas_pca/otel.rb, slice: 1, of: 1 }
+          - { shard: 411, files: lib/atlas_pca/payments.rb, slice: 1, of: 2 }
+          - { shard: 412, files: lib/atlas_pca/payments.rb, slice: 2, of: 2 }
+          - { shard: 413, files: lib/atlas_pca/payments_rails.rb, slice: 1, of: 1 }
+          - { shard: 414, files: lib/atlas_pca/payments_token.rb, slice: 1, of: 1 }
+          - { shard: 415, files: lib/atlas_pca/policy_bridge.rb, slice: 1, of: 4 }
+          - { shard: 416, files: lib/atlas_pca/policy_bridge.rb, slice: 2, of: 4 }
+          - { shard: 417, files: lib/atlas_pca/policy_bridge.rb, slice: 3, of: 4 }
+          - { shard: 418, files: lib/atlas_pca/policy_bridge.rb, slice: 4, of: 4 }
+          - { shard: 419, files: lib/atlas_pca/policy_bridge_cel.rb, slice: 1, of: 3 }
+          - { shard: 420, files: lib/atlas_pca/policy_bridge_cel.rb, slice: 2, of: 3 }
+          - { shard: 421, files: lib/atlas_pca/policy_bridge_cel.rb, slice: 3, of: 3 }
+          - { shard: 422, files: lib/atlas_pca/policy_ci.rb, slice: 1, of: 3 }
+          - { shard: 423, files: lib/atlas_pca/policy_ci.rb, slice: 2, of: 3 }
+          - { shard: 424, files: lib/atlas_pca/policy_ci.rb, slice: 3, of: 3 }
+          - { shard: 425, files: lib/atlas_pca/pq_threshold.rb, slice: 1, of: 2 }
+          - { shard: 426, files: lib/atlas_pca/pq_threshold.rb, slice: 2, of: 2 }
+          - { shard: 427, files: lib/atlas_pca/rag.rb, slice: 1, of: 1 }
+          - { shard: 428, files: lib/atlas_pca/rails.rb, slice: 1, of: 1 }
+          - { shard: 429, files: lib/atlas_pca/ratchet.rb, slice: 1, of: 1 }
+          - { shard: 430, files: lib/atlas_pca/ratchet_accumulator.rb, slice: 1, of: 1 }
+          - { shard: 431, files: lib/atlas_pca/ratchet_group.rb, slice: 1, of: 1 }
+          - { shard: 432, files: lib/atlas_pca/revoke.rb, slice: 1, of: 2 }
+          - { shard: 433, files: lib/atlas_pca/revoke.rb, slice: 2, of: 2 }
+          - { shard: 434, files: lib/atlas_pca/rotate.rb, slice: 1, of: 1 }
+          - { shard: 435, files: lib/atlas_pca/ruby_llm.rb, slice: 1, of: 1 }
+          - { shard: 436, files: lib/atlas_pca/sandbox.rb, slice: 1, of: 3 }
+          - { shard: 437, files: lib/atlas_pca/sandbox.rb, slice: 2, of: 3 }
+          - { shard: 438, files: lib/atlas_pca/sandbox.rb, slice: 3, of: 3 }
+          - { shard: 439, files: lib/atlas_pca/sandbox_egress.rb, slice: 1, of: 1 }
+          - { shard: 440, files: lib/atlas_pca/schema.rb, slice: 1, of: 1 }
+          - { shard: 441, files: lib/atlas_pca/scim.rb, slice: 1, of: 2 }
+          - { shard: 442, files: lib/atlas_pca/scim.rb, slice: 2, of: 2 }
+          - { shard: 443, files: lib/atlas_pca/scitt.rb, slice: 1, of: 3 }
+          - { shard: 444, files: lib/atlas_pca/scitt.rb, slice: 2, of: 3 }
+          - { shard: 445, files: lib/atlas_pca/scitt.rb, slice: 3, of: 3 }
+          - { shard: 446, files: lib/atlas_pca/scitt_log.rb, slice: 1, of: 2 }
+          - { shard: 447, files: lib/atlas_pca/scitt_log.rb, slice: 2, of: 2 }
+          - { shard: 448, files: lib/atlas_pca/sdjwt.rb, slice: 1, of: 2 }
+          - { shard: 449, files: lib/atlas_pca/sdjwt.rb, slice: 2, of: 2 }
+          - { shard: 450, files: lib/atlas_pca/siem.rb, slice: 1, of: 3 }
+          - { shard: 451, files: lib/atlas_pca/siem.rb, slice: 2, of: 3 }
+          - { shard: 452, files: lib/atlas_pca/siem.rb, slice: 3, of: 3 }
+          - { shard: 453, files: lib/atlas_pca/signals.rb, slice: 1, of: 4 }
+          - { shard: 454, files: lib/atlas_pca/signals.rb, slice: 2, of: 4 }
+          - { shard: 455, files: lib/atlas_pca/signals.rb, slice: 3, of: 4 }
+          - { shard: 456, files: lib/atlas_pca/signals.rb, slice: 4, of: 4 }
+          - { shard: 457, files: lib/atlas_pca/spiffe.rb, slice: 1, of: 3 }
+          - { shard: 458, files: lib/atlas_pca/spiffe.rb, slice: 2, of: 3 }
+          - { shard: 459, files: lib/atlas_pca/spiffe.rb, slice: 3, of: 3 }
+          - { shard: 460, files: lib/atlas_pca/store_conformance_cli.rb, slice: 1, of: 1 }
+          - { shard: 461, files: lib/atlas_pca/store_conformance_crash.rb, slice: 1, of: 1 }
+          - { shard: 462, files: lib/atlas_pca/store_conformance_load.rb, slice: 1, of: 1 }
+          - { shard: 463, files: lib/atlas_pca/store_conformance_model.rb, slice: 1, of: 2 }
+          - { shard: 464, files: lib/atlas_pca/store_conformance_model.rb, slice: 2, of: 2 }
+          - { shard: 465, files: lib/atlas_pca/store_conformance_pca_state.rb, slice: 1, of: 2 }
+          - { shard: 466, files: lib/atlas_pca/store_conformance_pca_state.rb, slice: 2, of: 2 }
+          - { shard: 467, files: lib/atlas_pca/store_conformance_profiles.rb, slice: 1, of: 5 }
+          - { shard: 468, files: lib/atlas_pca/store_conformance_profiles.rb, slice: 2, of: 5 }
+          - { shard: 469, files: lib/atlas_pca/store_conformance_profiles.rb, slice: 3, of: 5 }
+          - { shard: 470, files: lib/atlas_pca/store_conformance_profiles.rb, slice: 4, of: 5 }
+          - { shard: 471, files: lib/atlas_pca/store_conformance_profiles.rb, slice: 5, of: 5 }
+          - { shard: 472, files: lib/atlas_pca/store_conformance_runner.rb, slice: 1, of: 1 }
+          - { shard: 473, files: lib/atlas_pca/store_conformance_worker.rb, slice: 1, of: 1 }
+          - { shard: 474, files: lib/atlas_pca/testing.rb, slice: 1, of: 1 }
+          - { shard: 475, files: lib/atlas_pca/txn_tokens.rb, slice: 1, of: 1 }
+          - { shard: 476, files: lib/atlas_pca/vc.rb, slice: 1, of: 2 }
+          - { shard: 477, files: lib/atlas_pca/vc.rb, slice: 2, of: 2 }
+          - { shard: 478, files: lib/atlas_pca/vdf.rb, slice: 1, of: 2 }
+          - { shard: 479, files: lib/atlas_pca/vdf.rb, slice: 2, of: 2 }
+          - { shard: 480, files: lib/atlas_pca/wallet.rb, slice: 1, of: 3 }
+          - { shard: 481, files: lib/atlas_pca/wallet.rb, slice: 2, of: 3 }
+          - { shard: 482, files: lib/atlas_pca/wallet.rb, slice: 3, of: 3 }
+          - { shard: 483, files: lib/atlas_pca/wallet_card.rb, slice: 1, of: 2 }
+          - { shard: 484, files: lib/atlas_pca/wallet_card.rb, slice: 2, of: 2 }
+          - { shard: 485, files: lib/atlas_pca/wallet_channel.rb, slice: 1, of: 2 }
+          - { shard: 486, files: lib/atlas_pca/wallet_channel.rb, slice: 2, of: 2 }
+          - { shard: 487, files: lib/atlas_pca/wallet_delivery.rb, slice: 1, of: 1 }
+          - { shard: 488, files: lib/atlas_pca/wallet_handlers.rb, slice: 1, of: 1 }
+          - { shard: 489, files: lib/atlas_pca/wallet_population.rb, slice: 1, of: 1 }
+          - { shard: 490, files: lib/atlas_pca/wallet_pricing.rb, slice: 1, of: 1 }
+          - { shard: 491, files: lib/atlas_pca/webauthn.rb, slice: 1, of: 2 }
+          - { shard: 492, files: lib/atlas_pca/webauthn.rb, slice: 2, of: 2 }
+          - { shard: 493, files: lib/atlas_pca/webbotauth.rb, slice: 1, of: 4 }
+          - { shard: 494, files: lib/atlas_pca/webbotauth.rb, slice: 2, of: 4 }
+          - { shard: 495, files: lib/atlas_pca/webbotauth.rb, slice: 3, of: 4 }
+          - { shard: 496, files: lib/atlas_pca/webbotauth.rb, slice: 4, of: 4 }
+          - { shard: 497, files: lib/atlas_pca/whatwg_url.rb, slice: 1, of: 1 }
+          - { shard: 498, files: lib/atlas_pca/goal_bench.rb, slice: 1, of: 2 }
+          - { shard: 499, files: lib/atlas_pca/goal_bench.rb, slice: 2, of: 2 }
+          - { shard: 500, files: lib/atlas_pca/approval_channels.rb, slice: 1, of: 1 }
+    steps:
+      - name: Container toolchain (git, cc for libatlas_less and the FFI stub tests, gh for the baseline download)
+        run: |
+          # an Ubuntu mirror mid-sync ("Packages.gz File has unexpected size") failed 51 shards of run 42743763420 with apt exit 100
+          for attempt in 1 2 3; do apt-get update -qq -o Acquire::Retries=5 && break; [ "$attempt" = 3 ] && exit 100; sleep $((attempt * 30)); done
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends git gcc make libc6-dev gh ca-certificates curl xz-utils zstd gzip openssl libyaml-0-2 libffi8 >/dev/null
+          openssl version
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v4
+      - name: Every file of lib/ is in the plan
+        run: diff <(find lib -name '*.rb' | sort) <(tr ' ' '\n' <<<"$PLAN_FILES" | grep . | sort)
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - name: Every file of lib/ is in the matrix, every slice present
+        run: |
+          ruby -ryaml -e '
+            rows = YAML.load_file(".github/workflows/mutation.yml")["jobs"].values.flat_map { |x| x.dig("strategy", "matrix", "include") || [] }
+            bad = rows.group_by { |r| r["files"] }.reject { |_, g| g.map { |r| r["slice"] }.sort == (1..g[0]["of"]).to_a && g.all? { |r| r["of"] == g[0]["of"] } }.keys
+            abort "::error::missing or uneven slices: #{bad}" unless bad.empty?
+            files = rows.flat_map { |r| r["files"].split }.uniq.sort
+            tree = Dir.glob("lib/**/*.rb").sort
+            abort "::error::not mutated: #{tree - files}; not in the tree: #{files - tree}" unless files == tree
+          '
+      - run: gem install --no-document parser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship tooling (+ libatlas_less)
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+        env:
+          LESS: '1'
+      - name: Module toolchain (C++ runtime and headers for the gem builds)
+        if: ${{ matrix.module }}
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends cmake g++ pkg-config libclang-dev libffi-dev zlib1g-dev >/dev/null
+      - name: Rust toolchain (the wasmtime gem builds its extension)
+        if: ${{ matrix.module == 'sandbox-wasm' }}
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: ffi (module shards)
+        if: ${{ matrix.module }}
+        run: |
+          gem install ffi --no-document
+          # the oracle's fresh-ruby load probe runs with --disable-gems: the ffi gem is reached through RUBYLIB
+          echo "RUBYLIB=$(ruby -e 'puts Gem::Specification.find_by_name("ffi").full_require_paths.join(":")')" >> "$GITHUB_ENV"
+      # the native libraries are built ONCE per module by the natives job (same container image), not once per shard
+      - name: Native libraries built by the natives job
+        if: ${{ matrix.module }}
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.module }}
+          path: ${{ runner.temp }}/native
+      - name: Native library environment
+        if: ${{ matrix.module }}
+        run: |
+          n="$RUNNER_TEMP/native"
+          case "${{ matrix.module }}" in
+            pairing) echo "PCA_BLST_LIB=$n/libblst.so" >> "$GITHUB_ENV" ;;
+            fhe) { echo "ATLAS_PCA_LIBSEALC=$n/libsealc.so"; echo "PCA_FHE_SEAL_CORPUS=$n/fhe-seal.json.gz"; echo "PCA_FHE_SEAL_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            lwe-ot) { echo "ATLAS_PCA_LIBLWEOT=$n/liblweot.so"; echo "ATLAS_PCA_LIBLWEOT_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            fndsa) { echo "ATLAS_PCA_LIBFNDSA=$n/libfndsa.so"; echo "ATLAS_PCA_LIBFNDSA_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            zk) { echo "ATLAS_PCA_LIBPCAZK=$n/libpcazk.so"; echo "ATLAS_PCA_LIBPCAZK_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            ada) { echo "ATLAS_PCA_LIBADA=$n/libada.so"; echo "PCA_ADA_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            sandbox-wasm)
+              gem install wasmtime minitest --no-document
+              chmod +x "$n/pca-wasmtime-host"
+              { echo "PCA_WASMTIME_HOST_BIN=$n/pca-wasmtime-host"; echo "PCA_WASMTIME_HOST_SHA256=$(cat "$n/host.sha256")"; } >> "$GITHUB_ENV" ;;
+          esac
+      - name: Module replay tests as kill entries
+        if: ${{ matrix.module }}
+        run: |
+          case "${{ matrix.module }}" in
+            pairing)      t="test/test_ref_aggsig.rb test/test_ref_bbs.rb test/test_bbs_kat.rb test/test_ref_abe.rb test/test_fame_pyecc.rb" ;;
+            fhe)          t="test/test_fhe_seal.rb" ;;
+            lwe-ot)       t="test/test_ref_mpc_endemic.rb" ;;
+            fndsa)        t="test/test_ref_fndsa.rb test/test_fndsa_native.rb test/test_fndsa_core.rb test/test_fndsa_e2e.rb" ;;
+            zk)           t="test/test_zk_native.rb" ;;
+            ada)          t="test/test_ref_entropy.rb" ;;
+            sandbox-wasm) t="test/test_ref_sandbox_wasm.rb" ;;
+          esac
+          cp .github/scripts/module-kill.rb "$MONO/sdks/$CRATE/test/kill/zz_module_kill.rb"
+          echo "MUT_MODULE_TESTS=$t" >> "$GITHUB_ENV"
+      - name: RSA DPoP oracle corpus (generated, never committed)
+        run: .github/scripts/dpop-rsa-corpus.sh "$MONO/sdks/ruby-pca/test-data/ref-dpop-rsa.json.gz"
+      - name: Private-key oracle cases (generated, never committed)
+        run: .github/scripts/gen-secret-corpus.sh "$MONO/sdks/ruby-pca/test-data" oprf:oprf core-frost-java:core-frost-java mpc-ot:mpc-ot attest-eat:attest-eat abe:abe frost-dkg:frost-dkg
+      - name: Reason snapshot from the unmutated source (this runner's backends)
+        working-directory: ${{ env.MONO }}/sdks/${{ env.CRATE }}
+        run: |
+          gzip -dc test-data/reasons.tsv.gz > "$RUNNER_TEMP/reasons-committed.tsv" 2>/dev/null || : > "$RUNNER_TEMP/reasons-committed.tsv"
+          ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz
+          n="$(gzip -dc test-data/reasons.tsv.gz | diff - "$RUNNER_TEMP/reasons-committed.tsv" | grep -c '^[<>]' || true)"
+          [ "$n" = 0 ] || echo "::warning::the committed test-data/reasons.tsv.gz differs from this runner's output in $n line(s): stale, or other backends. The oracle uses the runner's (regenerate: ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz)"
+      - name: Baseline results (targeted mode)
+        if: ${{ !(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]')) && needs.pool.outputs.have == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-pool
+          path: ${{ runner.temp }}/base
+      - name: Baseline results (point the carry at them)
+        if: ${{ !(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]')) && needs.pool.outputs.have == 'true' }}
+        run: |
+          [ -n "$(find "$RUNNER_TEMP/base" -name '*.src.rb' -print -quit)" ] || { echo "::error::baseline pool holds no results"; exit 1; }
+          echo "BASE=$RUNNER_TEMP/base" >> "$GITHUB_ENV"
+          echo "targeted: seeded from the baseline pool ($(find "$RUNNER_TEMP/base" -name '*.json' | wc -l) results file(s))"
+      # A survivor of the baseline run stands when this run's oracle is byte-identical to the one it ran against: every tracked file of the
+      # checkout (tests, kill tests, lib, corpus inputs) plus the shared corpus and the mutator, ledgers aside. Any change at all (a new kill
+      # test may kill it) and the survivors run again; kills carry as before.
+      - name: Oracle fingerprint (for carrying survivors)
+        run: |
+          : > "$RUNNER_TEMP/no-excludes.txt"
+          node "$MONO/tools/pca-audit/mut-carry/snapshot.mjs" make --root="$GITHUB_WORKSPACE" --exclude-list="$RUNNER_TEMP/no-excludes.txt" \
+            --corpus-root="$MONO" --out="$RUNNER_TEMP/fp-snap" --cfg="ruby-mutate $(ruby -v) $(openssl version)" \
+            --tool-files="$MONO/tools/pca-audit/ruby-mutate/mutate.rb,$MONO/tools/pca-audit/ruby-mutate/oracle.rb"
+          fp="$(node -e '
+            const fs = require("fs"), path = require("path"), h = require("crypto").createHash("sha256");
+            const L = /(^|\/)(mutation-run-errors|mutation-equivalents|[^/]*mutants-ledger)[^/]*\.json$/;
+            const walk = (d, b = d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name), b) : [path.relative(b, path.join(d, e.name))]);
+            const root = process.argv[1]; h.update(JSON.parse(fs.readFileSync(root + "/meta.json", "utf8")).tool_hash);
+            for (const r of walk(root).sort()) { if (r === "meta.json" || L.test(r)) continue; h.update(r + "\0"); h.update(fs.readFileSync(path.join(root, r))); }
+            console.log(h.digest("hex"));
+          ' "$RUNNER_TEMP/fp-snap")"
+          echo "ORACLE_FP=$fp" >> "$GITHUB_ENV"
+          echo "oracle fingerprint $fp"
+      - name: Mutate
+        working-directory: ${{ env.MONO }}/tools/pca-audit/ruby-mutate
+        env:
+          FILES: ${{ matrix.files }}
+          SLICE: ${{ matrix.slice }}
+          OF: ${{ matrix.of }}
+          # the oracle refuses to run on a host without ML-DSA / SLH-DSA / LESS (a PQ-less shard silently skips the PQ cases)
+          MUT_REQUIRE_PQ: '1'
+          # module shards: the module's replay tests (module-kill.rb) run before the rest of the registry
+          MUT_FIRST: ${{ matrix.module && 'mod_' || '' }}
+        run: |
+          # a mutant that allocates without bound dies alone (NoMemoryError: a RUN ERROR, ledgered per mutant), not the runner
+          ulimit -v 6291456
+          : > "$RUNNER_TEMP/raws.tsv"
+          mkdir -p "$RUNNER_TEMP/mut-results"
+          n=0
+          for f in $FILES; do
+            n=$((n + 1)); F="../../../sdks/$CRATE/$f"; out="$RUNNER_TEMP/raw-$n.json"
+            slug="${f//\//__}"
+            # stderr shown (minus the parser gem's version banner): a failing listing must say why
+            ruby mutate.rb "$F" --list > "$RUNNER_TEMP/list.tsv" 2> >(grep --line-buffered -v 'warning: parser\|Please see\|is loading parser' >&2)
+            ids="$(awk -F'\t' -v k="$SLICE" -v m="$OF" '($1 % m) == (k - 1) { printf "%s%s", s, $1; s="," }' "$RUNNER_TEMP/list.tsv")"
+            echo "$f: $(wc -l < "$RUNNER_TEMP/list.tsv") mutants, $(tr ',' '\n' <<<"$ids" | grep -c .) in slice $SLICE/$OF"
+            if [ -z "$ids" ]; then
+              # a file of data only (no def: constants and heredocs) has nothing to mutate; code with no mutant is a mutator failure
+              if [ ! -s "$RUNNER_TEMP/list.tsv" ] && ! grep -qE '^\s*def ' "$F"; then echo "::notice::$f has no code to mutate (data only)"; continue; fi
+              echo "::error::no mutants for $f"; exit 1
+            fi
+            # a SURVIVING mutant of an Intent Layer v2 file runs the whole mutation-differential corpus (~14k cases, minutes);
+            # every other file skips those tests, so a hung mutant there is cut after 5 minutes
+            case "$f" in lib/atlas_pca/intent_*.rb) tmo=900 ;; *) tmo=300 ;; esac
+            carry=()
+            if [ -n "${BASE:-}" ]; then
+              prevs="$(find "$BASE" -name "$slug.json" | sort | paste -sd, -)"
+              src="$(find "$BASE" -name "$slug.src.rb" -print -quit)"
+              if [ -n "$prevs" ] && [ -n "$src" ]; then
+                carry=(--carry "$prevs" --carry-src "$src")
+                # same oracle as the baseline's: its survivors stand too
+                bfp="$(find "$BASE" -name "$slug.fp" -print -quit)"
+                if [ -n "$bfp" ] && [ "$(cat "$bfp")" = "$ORACLE_FP" ]; then carry+=(--carry-survived); echo "$f: oracle identical to the baseline's, survivors carried"; fi
+              else echo "::notice::$f: no baseline results, full run of the slice"; fi
+            fi
+            ruby mutate.rb "$F" --jobs 4 --timeout "$tmo" --only "$ids" "${carry[@]}" > "$out" 2> >(grep --line-buffered -v 'warning: parser\|Please see\|is loading parser' >&2) || {
+              rc=$?
+              # show why: the oracle's own suites on the unmutated source
+              (cd "../../../sdks/$CRATE" && ruby conformance.rb 2>&1 | tail -15; ruby -Ilib test/run_kill.rb 2>&1 | tail -15)
+              exit "$rc"; }
+            printf '%s\t%s\n' "$f" "$out" >> "$RUNNER_TEMP/raws.tsv"
+            # the next run's baseline: this slice's results (carried ones included) + the source they were taken on
+            cp "$out" "$RUNNER_TEMP/mut-results/$slug.json"; cp "$F" "$RUNNER_TEMP/mut-results/$slug.src.rb"; printf '%s' "$ORACLE_FP" > "$RUNNER_TEMP/mut-results/$slug.fp"
+          done
+      - name: Report
+        run: |
+          node -e '
+            const fs = require("fs"); const counts = {}, surv = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8"))) {
+                counts[m.status] = (counts[m.status] || 0) + 1;
+                if (m.status === "SURVIVED") surv.push({ crate: "ruby-pca", file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, lineno: m.line, ...(m.fn ? { fn: m.fn } : {}) });
+              }
+            }
+            fs.writeFileSync("counts.json", JSON.stringify(counts)); fs.writeFileSync("survivors.json", JSON.stringify(surv));
+            // gate honesty: a mutant decided by a stack overflow, the memory cap, a signal or the time limit (no test answered wrong)
+            // is listed here, and the merge fails on each one without a per-mutant reason in mutation-run-errors.json (BRIEF: a
+            // timeout is not a kill by itself; its entry proves the MUTANT loops or allocates without bound)
+            const errs = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8")))
+                if (/^(RUN_ERROR|KILLED\(timeout)/.test(String(m.status))) errs.push({ file, fn: m.fn ?? null, line: m.line_text, occurrence: m.occurrence, mutant: m.mutant, lineno: m.line, evidence: m.status });
+            }
+            fs.writeFileSync("run-errors-${{ matrix.shard }}.json", JSON.stringify(errs, null, 1));
+            // killed mutants whose site the survivor ledger or the run-error ledger names: the dead-minion rule of the merge (an equivalent
+            // entry whose mutant was KILLED this run is a notice, not a stale entry) and the racy run-error rule read them
+            const sk = (e) => [e.file, e.mutant, String(e.line || "").trim(), e.occurrence ?? 1].join("\u0000");
+            const named = new Set();
+            for (const p of [process.env.MONO + "/tools/pca-audit/native-mutation-equivalents.json", process.env.MONO + "/sdks/ruby-pca/mutation-equivalents.part.json", process.env.MONO + "/sdks/ruby-pca/mutation-run-errors.json"]) {
+              if (!fs.existsSync(p)) continue;
+              const j = JSON.parse(fs.readFileSync(p, "utf8"));
+              for (const e of Array.isArray(j) ? j : j.equivalents) if (!e.crate || e.crate === "ruby-pca") named.add(sk(e));
+            }
+            const kd = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8")))
+                if (/^KILLED/.test(String(m.status)) && !/^KILLED\(timeout/.test(String(m.status)) && named.has(sk({ file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence })))
+                  kd.push({ file, fn: m.fn ?? null, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, status: m.status });
+            }
+            fs.writeFileSync("killed-equivalents-${{ matrix.shard }}.json", JSON.stringify(kd));
+            const tmo = Object.entries(counts).filter(([k]) => k.startsWith("KILLED(timeout") || k === "RUN_ERROR(timeout)").reduce((a, [, n]) => a + n, 0);
+            const dl = counts["KILLED(deadline)"] || 0, cr = counts["KILLED(crash)"] || 0;
+            console.log(`run errors: ${errs.length}; timeouts: ${tmo}; killed-by-deadline: ${dl}; killed-by-crash: ${cr}`);
+          ' "$RUNNER_TEMP/raws.tsv"
+          node .github/scripts/mutation-shard-report.mjs --crate="$CRATE" --shard=${{ matrix.shard }} --of="$SHARDS" --tool=ruby-mutate \
+            --counts=counts.json --survivors=survivors.json --out=shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            shard-${{ matrix.shard }}.json
+            run-errors-${{ matrix.shard }}.json
+            killed-equivalents-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mut-results-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mut-results/
+          retention-days: 30
+
+  shard-3:
+    needs: [reuse, pool, natives]
+    if: ${{ needs.reuse.outputs.skip != 'true' && (!cancelled() && needs.pool.result != 'failure') }}
+    name: shard ${{ matrix.shard }}/605 (${{ matrix.files }} ${{ matrix.slice }}/${{ matrix.of }})
+    # the ubuntu-26.04 userland (OpenSSL 3.5: ML-DSA / SLH-DSA) in a container on the general runner pool: the
+    # ubuntu-26.04 hosted image has a much smaller concurrency pool (~14 jobs where the plan allows 60)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+      env:
+        LANG: C.UTF-8
+        LC_ALL: C.UTF-8
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 256 # Enterprise plan: 500 concurrent jobs org-wide; GitHub queues anything above that
+      matrix:
+        include:
+          - { shard: 501, files: lib/atlas_pca/hash_suite.rb, slice: 1, of: 1 }
+          - { shard: 502, files: lib/atlas_pca/pq.rb, slice: 1, of: 1 }
+          - { shard: 503, files: lib/atlas_pca/server_guard.rb, slice: 1, of: 1 }
+          - { shard: 504, files: lib/atlas_pca/chain_compact.rb, slice: 1, of: 1 }
+          - { shard: 505, files: lib/atlas_pca/policy_templates.rb, slice: 1, of: 1 }
+          - { shard: 506, files: lib/atlas_pca/discovery.rb, slice: 1, of: 1 }
+          - { shard: 507, files: lib/atlas_pca/reference_names.rb, slice: 1, of: 1 }
+          - { shard: 508, files: lib/atlas_pca/durable_state.rb, slice: 1, of: 3 }
+          - { shard: 509, files: lib/atlas_pca/durable_state.rb, slice: 2, of: 3 }
+          - { shard: 510, files: lib/atlas_pca/durable_state.rb, slice: 3, of: 3 }
+          - { shard: 511, files: lib/atlas_pca/undo_stores.rb, slice: 1, of: 1 }
+          - { shard: 512, files: lib/atlas_pca/wire_checks.rb, slice: 1, of: 1 }
+          - { shard: 513, files: lib/atlas_pca/approvals.rb, slice: 1, of: 1 }
+          - { shard: 514, files: lib/atlas_pca/reference_helpers.rb, slice: 1, of: 1 }
+          - { shard: 515, files: lib/atlas_pca/actions_pack.rb, slice: 1, of: 1 }
+          - { shard: 516, files: lib/atlas_pca/mesh_witness.rb, slice: 1, of: 1 }
+          - { shard: 517, files: lib/atlas_pca/policy_vm.rb, slice: 1, of: 1 }
+          - { shard: 518, files: lib/atlas_pca/pq_threshold_experimental.rb, slice: 1, of: 1 }
+          - { shard: 519, files: lib/atlas_pca/undo_coordinator.rb, slice: 1, of: 2 }
+          - { shard: 520, files: lib/atlas_pca/undo_coordinator.rb, slice: 2, of: 2 }
+          - { shard: 521, files: lib/atlas_pca/bond_settlement.rb, slice: 1, of: 2 }
+          - { shard: 522, files: lib/atlas_pca/bond_settlement.rb, slice: 2, of: 2 }
+          - { shard: 523, files: lib/atlas_pca/bond_store.rb, slice: 1, of: 1 }
+          - { shard: 524, files: lib/atlas_pca/budget_ledger.rb, slice: 1, of: 2 }
+          - { shard: 525, files: lib/atlas_pca/budget_ledger.rb, slice: 2, of: 2 }
+          - { shard: 526, files: lib/atlas_pca/ledger_store.rb, slice: 1, of: 2 }
+          - { shard: 527, files: lib/atlas_pca/ledger_store.rb, slice: 2, of: 2 }
+          - { shard: 528, files: lib/atlas_pca/optimistic_adjudication.rb, slice: 1, of: 1 }
+          - { shard: 529, files: lib/atlas_pca/store_errors.rb, slice: 1, of: 1 }
+          - { shard: 530, files: lib/atlas_pca/agent_native.rb, slice: 1, of: 3 }
+          - { shard: 531, files: lib/atlas_pca/agent_native.rb, slice: 2, of: 3 }
+          - { shard: 532, files: lib/atlas_pca/agent_native.rb, slice: 3, of: 3 }
+          - { shard: 533, files: lib/atlas_pca/zk_native.rb, slice: 1, of: 1, module: zk }
+          - { shard: 534, files: lib/atlas_pca/bond_pool.rb, slice: 1, of: 1 }
+          - { shard: 535, files: lib/atlas_pca/core_small.rb, slice: 1, of: 1 }
+          - { shard: 536, files: lib/atlas_pca/durable_open.rb, slice: 1, of: 1 }
+          - { shard: 537, files: lib/atlas_pca/entropy.rb, slice: 1, of: 2, module: ada }
+          - { shard: 538, files: lib/atlas_pca/entropy.rb, slice: 2, of: 2, module: ada }
+          - { shard: 539, files: lib/atlas_pca/kem.rb, slice: 1, of: 1 }
+          - { shard: 540, files: lib/atlas_pca/ledger_sign.rb, slice: 1, of: 1 }
+          - { shard: 541, files: lib/atlas_pca/objective_binding.rb, slice: 1, of: 1 }
+          - { shard: 542, files: lib/atlas_pca/optimistic_open.rb, slice: 1, of: 1 }
+          - { shard: 543, files: lib/atlas_pca/signers_siblings.rb, slice: 1, of: 1 }
+          - { shard: 544, files: lib/atlas_pca/zk_ceremony.rb, slice: 1, of: 1 }
+          - { shard: 545, files: lib/atlas_pca/fdlibm_pow.rb, slice: 1, of: 1 }
+          - { shard: 546, files: lib/atlas_pca/mesh_issue.rb, slice: 1, of: 2 }
+          - { shard: 547, files: lib/atlas_pca/mesh_issue.rb, slice: 2, of: 2 }
+          - { shard: 548, files: lib/atlas_pca/zk.rb, slice: 1, of: 3 }
+          - { shard: 549, files: lib/atlas_pca/zk.rb, slice: 2, of: 3 }
+          - { shard: 550, files: lib/atlas_pca/zk.rb, slice: 3, of: 3 }
+          - { shard: 551, files: lib/atlas_pca/zk_bundled.rb, slice: 1, of: 1 }
+          - { shard: 552, files: lib/atlas_pca/pq_quorum.rb, slice: 1, of: 2 }
+          - { shard: 553, files: lib/atlas_pca/pq_quorum.rb, slice: 2, of: 2 }
+          - { shard: 554, files: lib/atlas_pca/safety_certificate.rb, slice: 1, of: 1 }
+          - { shard: 555, files: lib/atlas_pca/catalog.rb, slice: 1, of: 1 }
+          - { shard: 556, files: lib/atlas_pca/budget_forecast.rb, slice: 1, of: 1 }
+          - { shard: 557, files: lib/atlas_pca/policy_sim.rb, slice: 1, of: 1 }
+          - { shard: 558, files: lib/atlas_pca/reputation.rb, slice: 1, of: 1 }
+          - { shard: 559, files: lib/atlas_pca/console.rb, slice: 1, of: 1 }
+          - { shard: 560, files: lib/atlas_pca/session.rb, slice: 1, of: 1 }
+          - { shard: 561, files: lib/atlas_pca/policy_debug.rb, slice: 1, of: 1 }
+          - { shard: 562, files: lib/atlas_pca/ha.rb, slice: 1, of: 2 }
+          - { shard: 563, files: lib/atlas_pca/ha.rb, slice: 2, of: 2 }
+          - { shard: 564, files: lib/atlas_pca/frontier_signals.rb, slice: 1, of: 1 }
+          - { shard: 565, files: lib/atlas_pca/objective_risk.rb, slice: 1, of: 3 }
+          - { shard: 566, files: lib/atlas_pca/objective_risk.rb, slice: 2, of: 3 }
+          - { shard: 567, files: lib/atlas_pca/objective_risk.rb, slice: 3, of: 3 }
+          - { shard: 568, files: lib/atlas_pca/progress.rb, slice: 1, of: 2 }
+          - { shard: 569, files: lib/atlas_pca/progress.rb, slice: 2, of: 2 }
+          - { shard: 570, files: lib/atlas_pca/attestation.rb, slice: 1, of: 3 }
+          - { shard: 571, files: lib/atlas_pca/attestation.rb, slice: 2, of: 3 }
+          - { shard: 572, files: lib/atlas_pca/attestation.rb, slice: 3, of: 3 }
+          - { shard: 573, files: lib/atlas_pca/attest_pq_software.rb, slice: 1, of: 1 }
+          - { shard: 574, files: lib/atlas_pca/attest_puf.rb, slice: 1, of: 2 }
+          - { shard: 575, files: lib/atlas_pca/attest_puf.rb, slice: 2, of: 2 }
+          - { shard: 576, files: lib/atlas_pca/attest_allowlist.rb, slice: 1, of: 3 }
+          - { shard: 577, files: lib/atlas_pca/attest_allowlist.rb, slice: 2, of: 3 }
+          - { shard: 578, files: lib/atlas_pca/attest_allowlist.rb, slice: 3, of: 3 }
+          - { shard: 579, files: lib/atlas_pca/attest_maa.rb, slice: 1, of: 2 }
+          - { shard: 580, files: lib/atlas_pca/attest_maa.rb, slice: 2, of: 2 }
+          - { shard: 581, files: lib/atlas_pca/attest_maa_pins_data.rb, slice: 1, of: 1 }
+          - { shard: 582, files: lib/atlas_pca/attest_nvidia.rb, slice: 1, of: 1 }
+          - { shard: 583, files: lib/atlas_pca/semantic_threshold.rb, slice: 1, of: 1 }
+          - { shard: 584, files: lib/atlas_pca/passport_api.rb, slice: 1, of: 2 }
+          - { shard: 585, files: lib/atlas_pca/passport_api.rb, slice: 2, of: 2 }
+          - { shard: 586, files: lib/atlas_pca/beacons_api.rb, slice: 1, of: 1 }
+          - { shard: 587, files: lib/atlas_pca/action_schema_api.rb, slice: 1, of: 1 }
+          - { shard: 588, files: lib/atlas_pca/intent_artifacts.rb, slice: 1, of: 1 }
+          - { shard: 589, files: lib/atlas_pca/intent_constants.rb, slice: 1, of: 1 }
+          - { shard: 590, files: lib/atlas_pca/nl_approval.rb, slice: 1, of: 1 }
+          - { shard: 591, files: lib/atlas_pca/frost_net.rb, slice: 1, of: 2 }
+          - { shard: 592, files: lib/atlas_pca/frost_net.rb, slice: 2, of: 2 }
+          - { shard: 593, files: lib/atlas_pca/frost_nonce_store.rb, slice: 1, of: 1 }
+          - { shard: 594, files: lib/atlas_pca/frost_pq_api.rb, slice: 1, of: 1 }
+          - { shard: 595, files: lib/atlas_pca/frost_dkg.rb, slice: 1, of: 2 }
+          - { shard: 596, files: lib/atlas_pca/frost_dkg.rb, slice: 2, of: 2 }
+          - { shard: 597, files: lib/atlas_pca/frost_dkg_channel.rb, slice: 1, of: 2 }
+          - { shard: 598, files: lib/atlas_pca/frost_dkg_channel.rb, slice: 2, of: 2 }
+          - { shard: 599, files: lib/atlas_pca/collation.rb, slice: 1, of: 1 }
+          - { shard: 600, files: lib/atlas_pca/verify_verdict.rb, slice: 1, of: 2 }
+          - { shard: 601, files: lib/atlas_pca/verify_verdict.rb, slice: 2, of: 2 }
+          - { shard: 602, files: lib/atlas_pca/frost_dkg_tls.rb, slice: 1, of: 1 }
+          - { shard: 603, files: lib/atlas_pca/frost_net_http.rb, slice: 1, of: 1 }
+          - { shard: 604, files: lib/atlas_pca/intent_signed.rb, slice: 1, of: 1 }
+          - { shard: 605, files: lib/atlas_pca/attest_vendors.rb, slice: 1, of: 1 }
+    steps:
+      - name: Container toolchain (git, cc for libatlas_less and the FFI stub tests, gh for the baseline download)
+        run: |
+          # an Ubuntu mirror mid-sync ("Packages.gz File has unexpected size") failed 51 shards of run 42743763420 with apt exit 100
+          for attempt in 1 2 3; do apt-get update -qq -o Acquire::Retries=5 && break; [ "$attempt" = 3 ] && exit 100; sleep $((attempt * 30)); done
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends git gcc make libc6-dev gh ca-certificates curl xz-utils zstd gzip openssl libyaml-0-2 libffi8 >/dev/null
+          openssl version
+          git config --global --add safe.directory '*'
+      - uses: actions/checkout@v4
+      - name: Every file of lib/ is in the plan
+        run: diff <(find lib -name '*.rb' | sort) <(tr ' ' '\n' <<<"$PLAN_FILES" | grep . | sort)
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - name: Every file of lib/ is in the matrix, every slice present
+        run: |
+          ruby -ryaml -e '
+            rows = YAML.load_file(".github/workflows/mutation.yml")["jobs"].values.flat_map { |x| x.dig("strategy", "matrix", "include") || [] }
+            bad = rows.group_by { |r| r["files"] }.reject { |_, g| g.map { |r| r["slice"] }.sort == (1..g[0]["of"]).to_a && g.all? { |r| r["of"] == g[0]["of"] } }.keys
+            abort "::error::missing or uneven slices: #{bad}" unless bad.empty?
+            files = rows.flat_map { |r| r["files"].split }.uniq.sort
+            tree = Dir.glob("lib/**/*.rb").sort
+            abort "::error::not mutated: #{tree - files}; not in the tree: #{files - tree}" unless files == tree
+          '
+      - run: gem install --no-document parser
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Flagship tooling (+ libatlas_less)
+        run: .github/scripts/mutation-layout.sh "$CRATE"
+        env:
+          LESS: '1'
+      - name: Module toolchain (C++ runtime and headers for the gem builds)
+        if: ${{ matrix.module }}
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=5 --no-install-recommends cmake g++ pkg-config libclang-dev libffi-dev zlib1g-dev >/dev/null
+      - name: Rust toolchain (the wasmtime gem builds its extension)
+        if: ${{ matrix.module == 'sandbox-wasm' }}
+        run: |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: ffi (module shards)
+        if: ${{ matrix.module }}
+        run: |
+          gem install ffi --no-document
+          # the oracle's fresh-ruby load probe runs with --disable-gems: the ffi gem is reached through RUBYLIB
+          echo "RUBYLIB=$(ruby -e 'puts Gem::Specification.find_by_name("ffi").full_require_paths.join(":")')" >> "$GITHUB_ENV"
+      # the native libraries are built ONCE per module by the natives job (same container image), not once per shard
+      - name: Native libraries built by the natives job
+        if: ${{ matrix.module }}
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.module }}
+          path: ${{ runner.temp }}/native
+      - name: Native library environment
+        if: ${{ matrix.module }}
+        run: |
+          n="$RUNNER_TEMP/native"
+          case "${{ matrix.module }}" in
+            pairing) echo "PCA_BLST_LIB=$n/libblst.so" >> "$GITHUB_ENV" ;;
+            fhe) { echo "ATLAS_PCA_LIBSEALC=$n/libsealc.so"; echo "PCA_FHE_SEAL_CORPUS=$n/fhe-seal.json.gz"; echo "PCA_FHE_SEAL_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            lwe-ot) { echo "ATLAS_PCA_LIBLWEOT=$n/liblweot.so"; echo "ATLAS_PCA_LIBLWEOT_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            fndsa) { echo "ATLAS_PCA_LIBFNDSA=$n/libfndsa.so"; echo "ATLAS_PCA_LIBFNDSA_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            zk) { echo "ATLAS_PCA_LIBPCAZK=$n/libpcazk.so"; echo "ATLAS_PCA_LIBPCAZK_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            ada) { echo "ATLAS_PCA_LIBADA=$n/libada.so"; echo "PCA_ADA_REQUIRED=1"; } >> "$GITHUB_ENV" ;;
+            sandbox-wasm)
+              gem install wasmtime minitest --no-document
+              chmod +x "$n/pca-wasmtime-host"
+              { echo "PCA_WASMTIME_HOST_BIN=$n/pca-wasmtime-host"; echo "PCA_WASMTIME_HOST_SHA256=$(cat "$n/host.sha256")"; } >> "$GITHUB_ENV" ;;
+          esac
+      - name: Module replay tests as kill entries
+        if: ${{ matrix.module }}
+        run: |
+          case "${{ matrix.module }}" in
+            pairing)      t="test/test_ref_aggsig.rb test/test_ref_bbs.rb test/test_bbs_kat.rb test/test_ref_abe.rb test/test_fame_pyecc.rb" ;;
+            fhe)          t="test/test_fhe_seal.rb" ;;
+            lwe-ot)       t="test/test_ref_mpc_endemic.rb" ;;
+            fndsa)        t="test/test_ref_fndsa.rb test/test_fndsa_native.rb test/test_fndsa_core.rb test/test_fndsa_e2e.rb" ;;
+            zk)           t="test/test_zk_native.rb" ;;
+            ada)          t="test/test_ref_entropy.rb" ;;
+            sandbox-wasm) t="test/test_ref_sandbox_wasm.rb" ;;
+          esac
+          cp .github/scripts/module-kill.rb "$MONO/sdks/$CRATE/test/kill/zz_module_kill.rb"
+          echo "MUT_MODULE_TESTS=$t" >> "$GITHUB_ENV"
+      - name: RSA DPoP oracle corpus (generated, never committed)
+        run: .github/scripts/dpop-rsa-corpus.sh "$MONO/sdks/ruby-pca/test-data/ref-dpop-rsa.json.gz"
+      - name: Private-key oracle cases (generated, never committed)
+        run: .github/scripts/gen-secret-corpus.sh "$MONO/sdks/ruby-pca/test-data" oprf:oprf core-frost-java:core-frost-java mpc-ot:mpc-ot attest-eat:attest-eat abe:abe frost-dkg:frost-dkg
+      - name: Reason snapshot from the unmutated source (this runner's backends)
+        working-directory: ${{ env.MONO }}/sdks/${{ env.CRATE }}
+        run: |
+          gzip -dc test-data/reasons.tsv.gz > "$RUNNER_TEMP/reasons-committed.tsv" 2>/dev/null || : > "$RUNNER_TEMP/reasons-committed.tsv"
+          ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz
+          n="$(gzip -dc test-data/reasons.tsv.gz | diff - "$RUNNER_TEMP/reasons-committed.tsv" | grep -c '^[<>]' || true)"
+          [ "$n" = 0 ] || echo "::warning::the committed test-data/reasons.tsv.gz differs from this runner's output in $n line(s): stale, or other backends. The oracle uses the runner's (regenerate: ruby -Ilib test/support/corpus.rb write test-data/reasons.tsv.gz)"
+      - name: Baseline results (targeted mode)
+        if: ${{ !(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]')) && needs.pool.outputs.have == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-pool
+          path: ${{ runner.temp }}/base
+      - name: Baseline results (point the carry at them)
+        if: ${{ !(inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]')) && needs.pool.outputs.have == 'true' }}
+        run: |
+          [ -n "$(find "$RUNNER_TEMP/base" -name '*.src.rb' -print -quit)" ] || { echo "::error::baseline pool holds no results"; exit 1; }
+          echo "BASE=$RUNNER_TEMP/base" >> "$GITHUB_ENV"
+          echo "targeted: seeded from the baseline pool ($(find "$RUNNER_TEMP/base" -name '*.json' | wc -l) results file(s))"
+      # A survivor of the baseline run stands when this run's oracle is byte-identical to the one it ran against: every tracked file of the
+      # checkout (tests, kill tests, lib, corpus inputs) plus the shared corpus and the mutator, ledgers aside. Any change at all (a new kill
+      # test may kill it) and the survivors run again; kills carry as before.
+      - name: Oracle fingerprint (for carrying survivors)
+        run: |
+          : > "$RUNNER_TEMP/no-excludes.txt"
+          node "$MONO/tools/pca-audit/mut-carry/snapshot.mjs" make --root="$GITHUB_WORKSPACE" --exclude-list="$RUNNER_TEMP/no-excludes.txt" \
+            --corpus-root="$MONO" --out="$RUNNER_TEMP/fp-snap" --cfg="ruby-mutate $(ruby -v) $(openssl version)" \
+            --tool-files="$MONO/tools/pca-audit/ruby-mutate/mutate.rb,$MONO/tools/pca-audit/ruby-mutate/oracle.rb"
+          fp="$(node -e '
+            const fs = require("fs"), path = require("path"), h = require("crypto").createHash("sha256");
+            const L = /(^|\/)(mutation-run-errors|mutation-equivalents|[^/]*mutants-ledger)[^/]*\.json$/;
+            const walk = (d, b = d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name), b) : [path.relative(b, path.join(d, e.name))]);
+            const root = process.argv[1]; h.update(JSON.parse(fs.readFileSync(root + "/meta.json", "utf8")).tool_hash);
+            for (const r of walk(root).sort()) { if (r === "meta.json" || L.test(r)) continue; h.update(r + "\0"); h.update(fs.readFileSync(path.join(root, r))); }
+            console.log(h.digest("hex"));
+          ' "$RUNNER_TEMP/fp-snap")"
+          echo "ORACLE_FP=$fp" >> "$GITHUB_ENV"
+          echo "oracle fingerprint $fp"
+      - name: Mutate
+        working-directory: ${{ env.MONO }}/tools/pca-audit/ruby-mutate
+        env:
+          FILES: ${{ matrix.files }}
+          SLICE: ${{ matrix.slice }}
+          OF: ${{ matrix.of }}
+          # the oracle refuses to run on a host without ML-DSA / SLH-DSA / LESS (a PQ-less shard silently skips the PQ cases)
+          MUT_REQUIRE_PQ: '1'
+          # module shards: the module's replay tests (module-kill.rb) run before the rest of the registry
+          MUT_FIRST: ${{ matrix.module && 'mod_' || '' }}
+        run: |
+          # a mutant that allocates without bound dies alone (NoMemoryError: a RUN ERROR, ledgered per mutant), not the runner
+          ulimit -v 6291456
+          : > "$RUNNER_TEMP/raws.tsv"
+          mkdir -p "$RUNNER_TEMP/mut-results"
+          n=0
+          for f in $FILES; do
+            n=$((n + 1)); F="../../../sdks/$CRATE/$f"; out="$RUNNER_TEMP/raw-$n.json"
+            slug="${f//\//__}"
+            # stderr shown (minus the parser gem's version banner): a failing listing must say why
+            ruby mutate.rb "$F" --list > "$RUNNER_TEMP/list.tsv" 2> >(grep --line-buffered -v 'warning: parser\|Please see\|is loading parser' >&2)
+            ids="$(awk -F'\t' -v k="$SLICE" -v m="$OF" '($1 % m) == (k - 1) { printf "%s%s", s, $1; s="," }' "$RUNNER_TEMP/list.tsv")"
+            echo "$f: $(wc -l < "$RUNNER_TEMP/list.tsv") mutants, $(tr ',' '\n' <<<"$ids" | grep -c .) in slice $SLICE/$OF"
+            if [ -z "$ids" ]; then
+              # a file of data only (no def: constants and heredocs) has nothing to mutate; code with no mutant is a mutator failure
+              if [ ! -s "$RUNNER_TEMP/list.tsv" ] && ! grep -qE '^\s*def ' "$F"; then echo "::notice::$f has no code to mutate (data only)"; continue; fi
+              echo "::error::no mutants for $f"; exit 1
+            fi
+            # a SURVIVING mutant of an Intent Layer v2 file runs the whole mutation-differential corpus (~14k cases, minutes);
+            # every other file skips those tests, so a hung mutant there is cut after 5 minutes
+            case "$f" in lib/atlas_pca/intent_*.rb) tmo=900 ;; *) tmo=300 ;; esac
+            carry=()
+            if [ -n "${BASE:-}" ]; then
+              prevs="$(find "$BASE" -name "$slug.json" | sort | paste -sd, -)"
+              src="$(find "$BASE" -name "$slug.src.rb" -print -quit)"
+              if [ -n "$prevs" ] && [ -n "$src" ]; then
+                carry=(--carry "$prevs" --carry-src "$src")
+                # same oracle as the baseline's: its survivors stand too
+                bfp="$(find "$BASE" -name "$slug.fp" -print -quit)"
+                if [ -n "$bfp" ] && [ "$(cat "$bfp")" = "$ORACLE_FP" ]; then carry+=(--carry-survived); echo "$f: oracle identical to the baseline's, survivors carried"; fi
+              else echo "::notice::$f: no baseline results, full run of the slice"; fi
+            fi
+            ruby mutate.rb "$F" --jobs 4 --timeout "$tmo" --only "$ids" "${carry[@]}" > "$out" 2> >(grep --line-buffered -v 'warning: parser\|Please see\|is loading parser' >&2) || {
+              rc=$?
+              # show why: the oracle's own suites on the unmutated source
+              (cd "../../../sdks/$CRATE" && ruby conformance.rb 2>&1 | tail -15; ruby -Ilib test/run_kill.rb 2>&1 | tail -15)
+              exit "$rc"; }
+            printf '%s\t%s\n' "$f" "$out" >> "$RUNNER_TEMP/raws.tsv"
+            # the next run's baseline: this slice's results (carried ones included) + the source they were taken on
+            cp "$out" "$RUNNER_TEMP/mut-results/$slug.json"; cp "$F" "$RUNNER_TEMP/mut-results/$slug.src.rb"; printf '%s' "$ORACLE_FP" > "$RUNNER_TEMP/mut-results/$slug.fp"
+          done
+      - name: Report
+        run: |
+          node -e '
+            const fs = require("fs"); const counts = {}, surv = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8"))) {
+                counts[m.status] = (counts[m.status] || 0) + 1;
+                if (m.status === "SURVIVED") surv.push({ crate: "ruby-pca", file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, lineno: m.line, ...(m.fn ? { fn: m.fn } : {}) });
+              }
+            }
+            fs.writeFileSync("counts.json", JSON.stringify(counts)); fs.writeFileSync("survivors.json", JSON.stringify(surv));
+            // gate honesty: a mutant decided by a stack overflow, the memory cap, a signal or the time limit (no test answered wrong)
+            // is listed here, and the merge fails on each one without a per-mutant reason in mutation-run-errors.json (BRIEF: a
+            // timeout is not a kill by itself; its entry proves the MUTANT loops or allocates without bound)
+            const errs = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8")))
+                if (/^(RUN_ERROR|KILLED\(timeout)/.test(String(m.status))) errs.push({ file, fn: m.fn ?? null, line: m.line_text, occurrence: m.occurrence, mutant: m.mutant, lineno: m.line, evidence: m.status });
+            }
+            fs.writeFileSync("run-errors-${{ matrix.shard }}.json", JSON.stringify(errs, null, 1));
+            // killed mutants whose site the survivor ledger or the run-error ledger names: the dead-minion rule of the merge (an equivalent
+            // entry whose mutant was KILLED this run is a notice, not a stale entry) and the racy run-error rule read them
+            const sk = (e) => [e.file, e.mutant, String(e.line || "").trim(), e.occurrence ?? 1].join("\u0000");
+            const named = new Set();
+            for (const p of [process.env.MONO + "/tools/pca-audit/native-mutation-equivalents.json", process.env.MONO + "/sdks/ruby-pca/mutation-equivalents.part.json", process.env.MONO + "/sdks/ruby-pca/mutation-run-errors.json"]) {
+              if (!fs.existsSync(p)) continue;
+              const j = JSON.parse(fs.readFileSync(p, "utf8"));
+              for (const e of Array.isArray(j) ? j : j.equivalents) if (!e.crate || e.crate === "ruby-pca") named.add(sk(e));
+            }
+            const kd = [];
+            for (const row of fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean)) {
+              const [file, path] = row.split("\t");
+              for (const m of JSON.parse(fs.readFileSync(path, "utf8")))
+                if (/^KILLED/.test(String(m.status)) && !/^KILLED\(timeout/.test(String(m.status)) && named.has(sk({ file, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence })))
+                  kd.push({ file, fn: m.fn ?? null, mutant: m.mutant, line: m.line_text, occurrence: m.occurrence, status: m.status });
+            }
+            fs.writeFileSync("killed-equivalents-${{ matrix.shard }}.json", JSON.stringify(kd));
+            const tmo = Object.entries(counts).filter(([k]) => k.startsWith("KILLED(timeout") || k === "RUN_ERROR(timeout)").reduce((a, [, n]) => a + n, 0);
+            const dl = counts["KILLED(deadline)"] || 0, cr = counts["KILLED(crash)"] || 0;
+            console.log(`run errors: ${errs.length}; timeouts: ${tmo}; killed-by-deadline: ${dl}; killed-by-crash: ${cr}`);
+          ' "$RUNNER_TEMP/raws.tsv"
+          node .github/scripts/mutation-shard-report.mjs --crate="$CRATE" --shard=${{ matrix.shard }} --of="$SHARDS" --tool=ruby-mutate \
+            --counts=counts.json --survivors=survivors.json --out=shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: |
+            shard-${{ matrix.shard }}.json
+            run-errors-${{ matrix.shard }}.json
+            killed-equivalents-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         with:
           name: mut-results-${{ matrix.shard }}
@@ -289,8 +1643,8 @@ jobs:
           retention-days: 30
 
   merge:
-    needs: shard
-    if: always()
+    needs: [shard, shard-2, shard-3]
+    if: ${{ needs.reuse.outputs.skip != 'true' && (always()) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -305,12 +1659,67 @@ jobs:
           path: reports
           pattern: shard-*
       - name: Merge shards and check the ledger
-        run: >
-          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports
-          --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE"
+        # a ledgered equivalent that a test KILLED this run is a notice (nondeterministic killer), not a stale entry: stale-killed.mjs
+        run: |
+          rc=0
+          node .github/scripts/mutation-merge.mjs --crate="$CRATE" --shards="$SHARDS" --reports=reports \
+            --checker="$MONO/tools/pca-audit" --src="$GITHUB_WORKSPACE" > "$RUNNER_TEMP/merge.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/merge.log"
+          node .github/scripts/stale-killed.mjs "$RUNNER_TEMP/merge.log" reports "$rc"
+      # gate honesty (BRIEF): a RUN_ERROR mutant (stack overflow, NoMemoryError under ulimit -v, a signal) was decided by no test.
+      # Each must be in mutation-run-errors.json with a per-mutant reason proving the mutant caused it; unlisted or stale fails.
+      - name: Run errors are each proven mutant-caused
+        if: ${{ !cancelled() }}
+        run: |
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const got = []; let shards = 0;
+            const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/^run-errors-\d+\.json$/.test(e.name)) { shards++; got.push(...JSON.parse(fs.readFileSync(p, "utf8"))); } } };
+            walk("reports");
+            const want = Number(process.env.SHARDS);
+            if (shards !== want) { console.error(`::error::run-error lists from ${shards}/${want} shards (a missing list is a failure)`); process.exit(1); }
+            const led = JSON.parse(fs.readFileSync(process.env.MONO + "/sdks/ruby-pca/mutation-run-errors.json", "utf8"));
+            const key = (m) => [m.file, m.fn ?? "", m.line, m.occurrence ?? 1, m.mutant].join(" | ");
+            const killedSites = new Set();
+            const kw = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) kw(p); else if (/^killed-equivalents-\d+\.json$/.test(e.name)) for (const k of JSON.parse(fs.readFileSync(p, "utf8"))) killedSites.add([k.file, k.mutant, String(k.line || "").trim(), k.occurrence ?? 1].join("\u0000")); } };
+            kw("reports");
+            const have = new Map(); for (const m of got) have.set(key(m), (have.get(key(m)) || 0) + 1);
+            let bad = 0; const used = new Set();
+            for (const e of led) {
+              if (!e.reason) { console.error("::error::run-error ledger entry without a reason: " + key(e)); bad++; }
+              // a `racy: true` entry (the mutant may die as an ordinary kill in a run where its resource blow-up loses the race) may
+              // match 0 only if its mutant was generated AND plainly killed in this run (killed-equivalents-<k>.json)
+              const plainlyKilled = killedSites.has([e.file, e.mutant, String(e.line || "").trim(), e.occurrence ?? 1].join("\u0000"));
+              if (!have.has(key(e)) && !(e.racy === true && plainlyKilled)) { console.error("::error::STALE run-error ledger entry (not a run error in this run" + (e.racy === true ? ", and not plainly killed either" : "") + "): " + key(e)); bad++; }
+              used.add(key(e));
+            }
+            for (const m of got) if (!used.has(key(m))) { console.error(`::error::UNPROVEN run error (${m.evidence}), no test decided it: ${key(m)}`); bad++; }
+            console.log(`${got.length} run-error mutant(s) over ${shards} shards, ${led.length} ledger entries, ${bad} problem(s)`);
+            process.exit(bad ? 1 : 0);
+          '
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: survivors-merged
           path: reports/survivors-merged.json
           if-no-files-found: ignore
+
+  reuse-record:
+    name: reuse record
+    needs: [reuse, pool, natives, shard, shard-2, shard-3, merge]
+    # only a run whose jobs all passed (skipped by their own conditions is fine), that was not partial and not itself a reuse, leaves a record
+    if: ${{ !cancelled() && needs.reuse.outputs.skip != 'true' && needs.reuse.outputs.hash != '' && !(false) && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && needs.merge.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - id: rec
+        env:
+          GATE_FULL: ${{ inputs.full || (startsWith(github.ref_name, 'ci/') && endsWith(github.ref_name, '-rc') || startsWith(github.ref_name, 'ci/gate-')) || contains(github.event.head_commit.message, '[force-full]') }}
+          HASH: ${{ needs.reuse.outputs.hash }}
+        run: node .github/scripts/ci-reuse.mjs record --workflow=mutation --hash="$HASH" --out="$RUNNER_TEMP/reuse-record"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.rec.outputs.artifact }}
+          path: ${{ runner.temp }}/reuse-record/
+          retention-days: 21

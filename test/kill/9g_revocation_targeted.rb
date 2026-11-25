@@ -49,7 +49,7 @@ module MutationKill
       ia = e['issued_at']
       return 'issued now+60000' unless chk(e, ia - 60_000) == { 'ok' => true }
       return 'issued now+60001' unless bad(chk(e, ia - 60_001), 'revocation epoch issued in the future')
-      return 'now nil' unless bad(chk(e, nil), 'revocation epoch check error')
+      return 'now nil' unless bad(chk(e, nil), 'revocation epoch expired (stale revocation root)')
       nil
     end
 

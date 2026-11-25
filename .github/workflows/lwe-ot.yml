@@ -1,0 +1,37 @@
+name: Endemic LWE base OT
+
+# AtlasPca::MpcLweOt: the post-quantum endemic base OT through ffi over a small C library (liblweot) that wraps the audited pqc_kyber K-PKE
+# (built here from the flagship's crate). The native replays the TypeScript reference corpus, byte for byte.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lwe-ot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (the flagship checkout, which carries the lattice crate)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --layout
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: ffi
+        run: gem install ffi --no-document
+      - name: liblweot (cargo build --features capi)
+        run: echo "ATLAS_PCA_LIBLWEOT=$(.github/scripts/build-liblweot.sh "$RUNNER_TEMP/lweot" "$RUNNER_TEMP/pca-flagship/packages/pca-mpc-lwe-ot-wasm/crate" | tail -1)/liblweot.so" >> "$GITHUB_ENV"
+      - name: Endemic OT replay
+        env:
+          ATLAS_PCA_LIBLWEOT_REQUIRED: '1'
+        run: ruby -Ilib -Itest test/test_ref_mpc_endemic.rb

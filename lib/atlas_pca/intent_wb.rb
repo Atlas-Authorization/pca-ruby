@@ -1211,7 +1211,7 @@ module AtlasPca
       paths = prov.keys.sort # UTF-8 byte order (compareUtf8)
       paths.each { |p| return deny.call("prov names '#{p}', a parameter the action does not carry") unless wb_resolve(params, p)[0] }
       paths.each do |a|
-        paths.each { |b| return deny.call("prov paths '#{a}' and '#{b}' overlap") if a != b && b.start_with?("#{a}.") }
+        paths.each { |b| return deny.call("prov paths '#{a}' and '#{b}' overlap") if b.start_with?("#{a}.") }
       end
 
       receipts = {}

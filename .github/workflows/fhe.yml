@@ -1,0 +1,53 @@
+name: FHE (BFV on Microsoft SEAL)
+
+# AtlasPca::FheSeal: the homomorphic risk gate through the ffi gem over Microsoft SEAL's own C export API (libsealc, built here from the pinned SEAL
+# tag). Wire compatibility with the TypeScript reference (node-seal 5.1.7 = SEAL 4.1.2) is shown by replaying a corpus generated here by the
+# reference: the native evaluator must reproduce the reference's evaluated ciphertexts byte for byte (re-saved uncompressed).
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SEAL_TAG: v4.1.2
+
+jobs:
+  fhe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (full shared corpus from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono ruby-pca
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: ffi
+        run: gem install ffi --no-document
+      - name: node-seal reference corpus
+        run: .github/scripts/fhe-seal-corpus.sh "$RUNNER_TEMP/fhe-seal.json.gz"
+      - name: libsealc at the pinned SEAL tag
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: '3.5' # SEAL's fetched zlib declares an ancient cmake minimum that CMake 4 rejects
+        run: |
+          dir="$(.github/scripts/build-libsealc.sh "$SEAL_TAG" "$RUNNER_TEMP/seal")"
+          echo "ATLAS_PCA_LIBSEALC=$dir/libsealc.so" >> "$GITHUB_ENV"
+      - name: BFV replay and round trip
+        timeout-minutes: 10 # a native crash leaves the interpreter hanging in its crash report
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        env:
+          PCA_FHE_SEAL_REQUIRED: '1'
+          PCA_FHE_SEAL_CORPUS: ${{ runner.temp }}/fhe-seal.json.gz
+        run: ruby -Ilib -Itest test/test_fhe_seal.rb

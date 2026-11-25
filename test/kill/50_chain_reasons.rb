@@ -57,11 +57,12 @@ module MutationKill
       K.vc([r, h.merge('issuer' => 'x')], v['expected_root_issuer']) == ["hop 1: issuer is not the parent's bound holder", false] &&
       K.vc([r, h], v['expected_root_issuer'], true, ['ed25519']) == ["hop 1: signature suite 'ml-dsa-65' is not allowed by this verifier's suite policy", false]
   end
-  t('verify_chain: an internal fault is reported by class name') do
+  t('verify_chain: a hop body that cannot be canonicalised is a malformed body; any other internal fault by class name') do
     deep = []
     40.times { deep = [deep] }
     r = K.root.merge('caveats' => [{ 'type' => 'deep', 'v' => deep }])
-    K.vc([r]) == ['malformed capability chain: AtlasPca::Malformed', false]
+    K.vc([r]) == ['hop 0: malformed body', false] &&
+      K.vc([K.root], K.iss, true, 5) == ['malformed capability chain: NoMethodError', false] # a non-array suite policy
   end
 
   t('caveat_limit_exceeded? counts only Array caveats of Hash hops; strictly false when within') do

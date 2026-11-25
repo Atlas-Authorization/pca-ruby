@@ -42,6 +42,7 @@ module MutationKill
     def with_env(val)
       old = ENV['ATLAS_PCA_LIBLESS']
       saved = ffi.instance_variable_defined?(:@binding) ? [ffi.instance_variable_get(:@binding)] : nil
+      signer = ffi.instance_variable_get(:@signer) # load_binding overwrites it: restore it with the binding
       ffi.send(:remove_instance_variable, :@binding) if saved
       val.nil? ? ENV.delete('ATLAS_PCA_LIBLESS') : ENV['ATLAS_PCA_LIBLESS'] = val
       yield
@@ -49,6 +50,7 @@ module MutationKill
       old.nil? ? ENV.delete('ATLAS_PCA_LIBLESS') : ENV['ATLAS_PCA_LIBLESS'] = old
       ffi.send(:remove_instance_variable, :@binding) if ffi.instance_variable_defined?(:@binding)
       ffi.instance_variable_set(:@binding, saved[0]) if saved
+      ffi.instance_variable_set(:@signer, signer)
     end
 
     def build_libs? = ffi.candidates.last(3).any? { |p| File.file?(p) }

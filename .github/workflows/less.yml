@@ -1,0 +1,39 @@
+name: LESS signing
+
+# AtlasPca::LessFfi + LessKeyPair: LESS-cat1 keygen / sign / verify through Fiddle over the shared LESS C library (built here from the
+# repository's pca-less-c). The PQ surface test signs, verifies and signs a hybrid suite artifact with it.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  less:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (the flagship checkout, which carries pca-less-c)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --layout --less
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: libatlas_less
+        shell: bash
+        run: |
+          src="$RUNNER_TEMP/pca-flagship/sdks/pca-less-c"
+          test -f "$src/build.sh"
+          echo "ATLAS_PCA_LIBLESS=$(bash "$src/build.sh" "$RUNNER_TEMP/less" | tail -1)" >> "$GITHUB_ENV"
+      - name: LESS sign / verify (a missing signing library fails, never skips)
+        run: |
+          ruby -Ilib -e 'require "atlas_pca"; raise "no LESS signing library" unless AtlasPca::LessFfi.signer_available?'
+          ruby -Ilib -Itest test/test_pq_surface.rb

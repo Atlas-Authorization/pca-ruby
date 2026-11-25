@@ -1,0 +1,52 @@
+name: IDNA (Ada C API)
+
+# AtlasPca::AdaIdna: byte parity with Node's WHATWG URL host parser (the verifiable-credential request signature's `url idn` case and the CIBA
+# payee domainToASCII) through Ada's C API over the ffi gem. libada is built here from the amalgamated ada.cpp of a pinned release (the C API is
+# part of that file); the core never needs it, the library is opt-in through ATLAS_PCA_LIBADA.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ADA_TAG: v4.0.0
+
+jobs:
+  ada-idna:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (full shared corpus from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono ruby-pca
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: ffi
+        run: gem install ffi --no-document
+      - name: libada from the pinned release (amalgamation)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/ada" && cd "$RUNNER_TEMP/ada"
+          for f in ada.cpp ada.h ada_c.h; do curl -fsSL --retry 4 -o "$f" "https://github.com/ada-url/ada/releases/download/$ADA_TAG/$f"; done
+          g++ -O2 -std=c++20 -shared -fPIC ada.cpp -o libada.so
+          echo "ATLAS_PCA_LIBADA=$RUNNER_TEMP/ada/libada.so" >> "$GITHUB_ENV"
+      - name: IDNA through Ada, the vc request signature (url idn), the CIBA payee form and the QRNG request URL
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        env:
+          PCA_ADA_REQUIRED: '1'
+        run: |
+          ruby -Ilib -Itest test/test_ada_idna.rb
+          ruby -Ilib -Itest test/test_ref_vc.rb
+          ruby -Ilib -Itest test/test_ref_ciba.rb
+          test -s test-data/ref-entropy.json.gz
+          ruby -Ilib -Itest test/test_ref_entropy.rb

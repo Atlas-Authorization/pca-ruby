@@ -1,0 +1,92 @@
+name: Native gems
+
+# The gem ships libada (the Ada URL parser Node uses, for non-ASCII hosts) and libsodium (ratchet, OPRF, FROST) per platform, in lib/atlas_pca/native, so
+# neither needs a manual install. Both are built here from SHA-256-pinned releases (native/build-native.sh); each platform gem is built with the
+# libraries in place and checked for them. The opt-in modules ship the same way (native/build-optional.sh): blst + GT shim (aggsig, bbs, abe), liblweot,
+# libfndsa, libsealc (FHE), the LESS verifier and the sandbox component host (pinned by the digest file beside it), on every platform including Windows
+# (sealc.dll, atlas_less.dll, pca-wasmtime-host.exe; the Rust and MSVC-built DLLs are plain C ABI and load from a MinGW Ruby). One gem per platform keeps one install step. The plain ruby-platform gem is built too and stays the fallback for platforms without a native gem.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-gem:
+    name: gem ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: x86_64-linux, os: ubuntu-22.04, ruby: '3.4' }
+          - { platform: aarch64-linux, os: ubuntu-22.04-arm, ruby: '3.4' }
+          - { platform: arm64-darwin, os: macos-14, ruby: '3.4' }
+          - { platform: x86_64-darwin, os: macos-15-intel, ruby: '3.4' }
+          - { platform: x64-mingw-ucrt, os: windows-2022, ruby: 'ucrt' }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (full shared corpus from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono ruby-pca
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: Build libada and libsodium
+        shell: bash
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: bash native/build-native.sh lib/atlas_pca/native
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the opt-in module libraries (pairing, FHE, lwe-ot, fndsa, LESS, sandbox host)
+        shell: bash
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: bash native/build-optional.sh lib/atlas_pca/native "$PWD/../.." "$GITHUB_WORKSPACE/.github/scripts"
+      - name: Build the platform gem
+        shell: bash
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        env:
+          ATLAS_PCA_GEM_PLATFORM: ${{ matrix.platform }}
+        run: gem build atlas-pca.gemspec --output "atlas-pca-${{ matrix.platform }}.gem"
+      - name: The gem carries both libraries
+        shell: bash
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: |
+          set -euo pipefail
+          listing="$(tar -xOf "atlas-pca-${{ matrix.platform }}.gem" data.tar.gz | tar -tzf -)"
+          echo "$listing" | grep -E '^lib/atlas_pca/native/(libada\.(so|dylib)|ada\.dll)$' >/dev/null || { echo "::error::no libada in the gem"; exit 1; }
+          echo "$listing" | grep -E '^lib/atlas_pca/native/libsodium\.(so|dylib|dll)$' >/dev/null || { echo "::error::no libsodium in the gem"; exit 1; }
+          for p in 'libblst\.(so|dylib)|blst\.dll' 'liblweot\.(so|dylib)|lweot\.dll' 'libfndsa\.(so|dylib)|fndsa\.dll' 'libpcazk\.(so|dylib)|pcazk\.dll'; do
+            echo "$listing" | grep -E "^lib/atlas_pca/native/($p)$" >/dev/null || { echo "::error::missing $p in the gem"; exit 1; }
+          done
+          for p in 'libsealc\.(so|dylib)|sealc\.dll' 'libatlas_less\.(so|dylib)|atlas_less\.dll' 'pca-wasmtime-host(\.exe)?' 'pca-wasmtime-host(\.exe)?\.sha256'; do
+            echo "$listing" | grep -E "^lib/atlas_pca/native/($p)$" >/dev/null || { echo "::error::missing $p in the gem"; exit 1; }
+          done
+          echo "gem carries every native library"
+      - name: Installed gem loads both (ratchet group on libsodium, Ada host mapping)
+        shell: bash
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        run: |
+          gem install ffi tzinfo --no-document
+          gem install "./atlas-pca-${{ matrix.platform }}.gem" --local --ignore-dependencies --no-document
+          cd "$RUNNER_TEMP"
+          ruby -e 'require "atlas_pca"; raise "no libada" unless AtlasPca::AdaIdna.available?; h = AtlasPca::AdaIdna.domain_to_ascii("bücher.example"); raise h.inspect unless h == "xn--bcher-kva.example"; AtlasPca::RatchetGroup::Sodium.bind!; puts "ok"'
+      - name: Installed gem loads the opt-in modules (no environment variables, no repo on the path)
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          ruby -e '%w[atlas_pca bls12 aggsig fndsa_native mpc_lwe_ot fhe_seal less_ffi].each { |f| require f == "atlas_pca" ? f : "atlas_pca/#{f}" }
+            A = AtlasPca
+            A::Bls12.lib; A::Bls12.gt_lib; A::Aggsig::Blst.bind!
+            raise "no fndsa" unless A::FndsaNative.available?
+            raise "no lwe-ot" unless A::MpcLweOt.available?
+            raise "no seal" unless A::FheSeal.available?
+            raise "no less" unless A::LessFfi.available?
+            puts "ok"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gem-${{ matrix.platform }}
+          path: ${{ env.PCA_MONO_SDK }}/atlas-pca-${{ matrix.platform }}.gem
+          if-no-files-found: error

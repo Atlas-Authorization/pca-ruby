@@ -1,0 +1,33 @@
+name: Precheck
+
+# Compile-only gate, ruby -wc on every file.
+# Runs only on pre/** pushes (and by hand): it builds and typechecks everything, tests included, and runs no test.
+# Push pre/<version> first and the full ci/** run only when this is green.
+on:
+  push:
+    branches: ['pre/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  precheck:
+    name: syntax-check every Ruby file
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - name: ruby -wc on every file
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . \( -name '*.rb' -o -name '*.gemspec' -o -name Gemfile -o -name Rakefile \) -not -path './vendor/*' -not -path './.git/*' -print0 | xargs -0 -n1 -P4 ruby -wc > "$RUNNER_TEMP/lint.log" 2>&1 || { grep -v '^Syntax OK' "$RUNNER_TEMP/lint.log"; exit 1; }
+          echo "$(grep -c '^Syntax OK' "$RUNNER_TEMP/lint.log") files checked"

@@ -45,7 +45,10 @@ module MutationKill
       [wire(x), wire(root)]
     end
 
-    def mw = AtlasPca::RackMiddleware
+    SigOnlyMw = Class.new(AtlasPca::RackMiddleware) do
+      def initialize(app, **o) = super(app, signature_only: true, **o)
+    end
+    def mw = SigOnlyMw
 
     def rack
       pa, grant = fresh
@@ -55,7 +58,7 @@ module MutationKill
       app = ->(_env) { [200, {}, ['ok']] }
       env = ->(h = hdr) { { 'HTTP_PCA_ACTION' => h, 'rack.input' => StringIO.new('') } }
       # sanity: the minted PCActn verifies at the wall clock
-      v = AtlasPca.verify_pcactn(pa, grant, now: (Time.now.to_f * 1000).to_i, audience: aud)
+      v = AtlasPca.verify_pcactn(pa, grant, now: (Time.now.to_f * 1000).to_i, audience: aud, insecure_skip_plan_root_check: true)
       return "minted pcactn denied: #{v.reason}" unless v.allow == true
       # every optional kwarg left at its default (now: wall clock, no intent policy, no intent_v2)
       return 'defaults' unless mw.new(app, audience: aud, resolve_grant: res).call(env.call)[0] == 200
@@ -90,14 +93,15 @@ module MutationKill
 
     def forbidden
       m = mw.new(->(_) {}, audience: 'a', resolve_grant: ->(_) {})
-      want = lambda do |desc, failed|
+      doc = 'https://github.com/Atlas-Authorization/pca/blob/main/docs/reference/refusals.md'
+      want = lambda do |desc, failed, check|
         [403, { 'WWW-Authenticate' => 'PCA realm="pca", error="access_denied"', 'content-type' => 'application/json' },
-         [%({"error":"access_denied","error_description":"#{desc}","failed_checks":#{JSON.generate(failed)}})]]
+         [%({"error":"access_denied","error_description":"#{desc}","failed_checks":#{JSON.generate(failed)},"doc":"#{doc}##{check}"})]]
       end
       v = ->(reason) { AtlasPca::Verdict.new(false, { 'wire' => true, 'chain' => false, 'x' => false }, reason) }
-      return 'nil reason' unless m.send(:forbidden, v.call(nil)) == want.call('policy denied the action', %w[chain x])
-      return 'empty reason' unless m.send(:forbidden, v.call('')) == want.call('policy denied the action', %w[chain x])
-      return 'reason kept' unless m.send(:forbidden, v.call('chain: bad')) == want.call('chain: bad', %w[chain x])
+      return 'nil reason' unless m.send(:forbidden, v.call(nil)) == want.call('policy denied the action', %w[chain x], 'policy')
+      return 'empty reason' unless m.send(:forbidden, v.call('')) == want.call('policy denied the action', %w[chain x], 'policy')
+      return 'reason kept' unless m.send(:forbidden, v.call('chain: bad')) == want.call('chain: bad', %w[chain x], 'chain')
       nil
     end
 
@@ -155,11 +159,13 @@ module MutationKill
     def with_binding_reset
       had = ffi.instance_variable_defined?(:@binding)
       saved = had ? ffi.instance_variable_get(:@binding) : nil
+      signer = ffi.instance_variable_get(:@signer)
       ffi.send(:remove_instance_variable, :@binding) if had
       yield
     ensure
       ffi.send(:remove_instance_variable, :@binding) if ffi.instance_variable_defined?(:@binding)
       ffi.instance_variable_set(:@binding, saved) if had
+      ffi.instance_variable_set(:@signer, signer)
     end
 
     DIR = Dir.mktmpdir('rubywb-less')
@@ -191,6 +197,7 @@ module MutationKill
       end
       if STUB
         old = ENV['ATLAS_PCA_LIBLESS']
+        old_signer = ffi.instance_variable_get(:@signer) # load_binding of a verify-only stub overwrites it
         begin
           ENV['ATLAS_PCA_LIBLESS'] = SONAME # not a file (relative, not in the cwd), but already mapped under that soname
           return 'bare soname is a file?' if File.file?(SONAME)
@@ -202,6 +209,7 @@ module MutationKill
           return 'the stub by path' unless !f.nil? && f.ptr == STUB[1].to_i
         ensure
           old.nil? ? ENV.delete('ATLAS_PCA_LIBLESS') : ENV['ATLAS_PCA_LIBLESS'] = old
+          ffi.instance_variable_set(:@signer, old_signer)
         end
       end
       nil

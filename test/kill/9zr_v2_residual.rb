@@ -56,8 +56,9 @@ module MutationKill
       num = { 'dims' => [{ 'kind' => 'num', 'path' => 5, 'lo' => 0, 'hi' => 9, 'cuts' => [] }] }
       cat = ->(vals) { { 'dims' => [{ 'kind' => 'cat', 'path' => 'action.resource', 'values' => vals }] } }
       other = { 'kind' => 'other', 'value' => iv2::MAP_OTHER }
-      mon = begin
-        x.monitor_states({ 'kind' => 'bogus' })
+      mon = x.monitor_states({ 'kind' => 'bogus' })
+      mon_enforce = begin
+        iv2.monitor_states!({ 'kind' => 'bogus' })
         'no raise'
       rescue AtlasPca::V2JS::StrictError => e
         e.message
@@ -69,7 +70,8 @@ module MutationKill
         ['map cell: first exact wins', x.map_cell_of(cat.call([{ 'kind' => 'exact', 'value' => 'a' }, { 'kind' => 'exact', 'value' => 'a' }, other]), 'a', {}) == { 'cell' => [0], 'flat' => 0 }],
         ['map cell: first equal prefix wins', x.map_cell_of(cat.call([{ 'kind' => 'prefix', 'value' => 'ab' }, { 'kind' => 'prefix', 'value' => 'ab' }, other]), 'abc', {}) == { 'cell' => [0], 'flat' => 0 }],
         ['map cell: longer prefix wins', x.map_cell_of(cat.call([{ 'kind' => 'prefix', 'value' => 'a' }, { 'kind' => 'prefix', 'value' => 'ab' }, other]), 'abc', {}) == { 'cell' => [1], 'flat' => 1 }],
-        ['monitor states: unknown kind text', mon == 'monitorStates: unknown kind'],
+        ['monitor states: unknown kind has no value (the reference returns undefined)', mon.nil?],
+        ['monitor states: enforcement form raises with the text', mon_enforce == 'monitorStates: unknown kind'],
         # `Array.isArray(sel.verbs) && sel.verbs.some(...)`: a non-array verbs selects nothing (no throw)
         ['acc selects: verbs not an array', [{ 'verbs' => 'air.book' }, { 'verbs' => 5 }].all? { |sel| x.acc_selects({ 'sel' => sel }, 'air.book') == false }],
         # the pre-state member set is compared as `Object.keys(s).join(',')`

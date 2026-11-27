@@ -1,0 +1,47 @@
+[
+  {
+    "id": "yUXY0hVCuAfpfTTTqKIdBarcjFdZxZpR4acgFnZ54Xc",
+    "issuer": "bs9w31lShUG77IukzMDucQKxMxD5ihjCZS55bi-YuOQ",
+    "holder": "a1B3uxRS6gmgkh6UvfEZ1BVfZvylYa1g7rGNSac9kZM",
+    "caveats": [
+      {
+        "agent_binding": {},
+        "caveats": [
+          {
+            "type": "max_spend",
+            "usd": 100
+          }
+        ],
+        "goal_commit": "yV__RNTWmjdINU6sCJrz6we08-JYGtdqWbgT7IQPnvA",
+        "predicates": [
+          {
+            "resource": "payments/*",
+            "verb": [
+              "payments.send",
+              "payments.refund"
+            ]
+          }
+        ],
+        "risk_policy": {
+          "bMax": 1000,
+          "kappa": 1,
+          "lambda": 0,
+          "rho": 0,
+          "theta1": 0.5,
+          "theta2": 0.8,
+          "weights": {
+            "alpha": 0,
+            "beta": 0,
+            "delta": 0,
+            "epsilon": 0,
+            "gamma": 0,
+            "zeta": 0
+          }
+        },
+        "type": "envelope"
+      }
+    ],
+    "body_digest": "yUXY0hVCuAfpfTTTqKIdBarcjFdZxZpR4acgFnZ54Xc",
+    "sig": "oxNkEIiUkVfC8T1nI-iQSTpUgE-4fDqdAdPF5kMETD9nyMTiSHe_ZiPvmIXPQsyWKlMTkdCvW195haG3DoOcDg"
+  }
+]

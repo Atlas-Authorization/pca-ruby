@@ -1,0 +1,66 @@
+name: Pairing packages
+
+# aggsig, bbs and abe on BLS12-381. Curve and pairing work is supranational blst through the ffi gem; ABE's GT operations are a
+# small shim (native/pca_gt.c) over blst's public API, built here with the pinned blst source into one shared library that
+# exports both the blst entry points and the pca_gt_* ones.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BLST_TAG: v0.3.16
+  BLST_COMMIT: e7f90de551e8df682f3cc99067d204d8b90d27ad
+
+jobs:
+  pairing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full adversarial corpus from the flagship
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --layout --less
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Secret-key oracle corpora (generated, never committed)
+        shell: bash
+        run: .github/scripts/gen-secret-corpus.sh "$PWD/test-data" abe:abe
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: ffi
+        run: gem install ffi --no-document
+      - name: blst at the pinned commit
+        run: |
+          git clone --quiet --depth 1 --branch "$BLST_TAG" https://github.com/supranational/blst "$RUNNER_TEMP/blst"
+          test "$(git -C "$RUNNER_TEMP/blst" rev-parse HEAD)" = "$BLST_COMMIT"
+      - name: Build libblst.so (blst + the GT shim, one shared library)
+        run: |
+          mkdir -p native/build
+          cc -O2 -fPIC -shared -D__BLST_PORTABLE__ -I"$RUNNER_TEMP/blst/bindings" \
+            -o native/build/libblst.so \
+            native/pca_gt.c "$RUNNER_TEMP/blst/src/server.c" "$RUNNER_TEMP/blst/build/assembly.S"
+          echo "PCA_BLST_LIB=$PWD/native/build/libblst.so" >> "$GITHUB_ENV"
+      - name: aggsig (reference corpus)
+        if: ${{ !cancelled() }} # one run shows every failing step
+        run: ruby -Ilib -Itest test/test_ref_aggsig.rb
+      - name: bbs (reference corpus, draft-irtf-cfrg-bbs-signatures fixtures)
+        if: ${{ !cancelled() }}
+        run: |
+          ruby -Ilib -Itest test/test_ref_bbs.rb
+          ruby -Ilib -Itest test/test_bbs_kat.rb
+      - name: abe (reference corpus, independent FAME vectors)
+        if: ${{ !cancelled() }}
+        run: |
+          ruby -Ilib -Itest test/test_ref_abe.rb
+          ruby -Ilib -Itest test/test_fame_pyecc.rb

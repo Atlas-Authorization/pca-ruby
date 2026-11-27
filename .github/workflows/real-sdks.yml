@@ -1,0 +1,36 @@
+name: Real vendor SDKs
+
+# The OpenAI, Anthropic and RubyLLM adapters against the real vendor gems (openai, anthropic, ruby_llm): response objects with Symbol enums and model accessors
+# must sign the same proofs as the JSON equivalents. The core gem never depends on them; only this job installs them.
+on:
+  push:
+    branches: [main, 'ci/**']
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-sdks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source layout (full shared corpus from the flagship)
+        shell: bash
+        run: .github/scripts/fetch-flagship-corpus.sh --mono ruby-pca
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+      - name: The vendor gems
+        run: gem install openai anthropic ruby_llm ffi --no-document
+      - name: Adapters over real SDK objects
+        working-directory: ${{ env.PCA_MONO_SDK }}
+        env:
+          PCA_REAL_SDK_REQUIRED: '1'
+        run: ruby -Ilib -Itest test/test_real_sdks.rb
